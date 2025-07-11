@@ -25,45 +25,20 @@ class MistralAttentionExtractor:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
         # Load model with device mapping for efficiency
+        # Force eager attention to support output_attentions
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=torch.float16,
             device_map="auto",
             trust_remote_code=True,
-            token=os.getenv("HUGGINGFACE_TOKEN")
+            token=os.getenv("HUGGINGFACE_TOKEN"),
+            attn_implementation="eager"  # Force eager attention
         )
 
         self.model.eval()  # Set model to evaluation mode
 
         # Storage for attention weights
         self.attention_weights = []
-    
-    def _attention_hook(self, module, input, output):
-        """Hook function to capture attention weights from each layer."""
-
-        # output[1] contains the attention weights
-### COPIED FROM HERE ###
-        # Shape: (batch_size, num_heads, seq_len, seq_len)
-        attention_weights = output[1]
-        if attention_weights is not None:
-            self.attention_weights.append(attention_weights.detach())
-    
-    def register_hooks(self):
-        """
-        Register hooks to capture attention weights from all layers.
-        """
-        self.hooks = []
-        for layer in self.model.model.layers:
-            hook = layer.self_attn.register_forward_hook(self._attention_hook)
-            self.hooks.append(hook)
-    
-    def remove_hooks(self):
-        """
-        Remove all registered hooks.
-        """
-        for hook in self.hooks:
-            hook.remove()
-        self.hooks = []
     
     def extract_attention_features(self, texts: List[str]) -> np.ndarray:
         """
@@ -84,9 +59,6 @@ class MistralAttentionExtractor:
             if i % 10 == 0:
                 print(f"Processing text {i+1}/{len(texts)}")
             
-            # Clear previous attention weights
-            self.attention_weights = []
-            
             # Tokenize input
             inputs = self.tokenizer(
                 text, 
@@ -99,25 +71,22 @@ class MistralAttentionExtractor:
             # Move to the same device as model
             inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
             
-            # Register hooks
-            self.register_hooks()
-            
-            # Forward pass
+            # Forward pass with attention outputs
             with torch.no_grad():
                 outputs = self.model(**inputs, output_attentions=True)
             
-            # Remove hooks
-            self.remove_hooks()
+            # Get attention weights from the model outputs
+            attention_weights = outputs.attentions  # Tuple of attention weights for each layer
             
             # Extract features from final token position
             features = []
             final_token_idx = inputs['attention_mask'].sum(dim=1) - 1  # Last non-padding token
             
-            for layer_attention in self.attention_weights:
+            for layer_idx, layer_attention in enumerate(attention_weights):
                 # layer_attention shape: (batch_size, num_heads, seq_len, seq_len)
                 batch_size, num_heads, seq_len, _ = layer_attention.shape
                 
-                # Get attention weights for the final token
+                # Get attention weights FROM the final token (what the final token attends to)
                 final_token_attention = layer_attention[0, :, final_token_idx[0], :]
                 
                 # Average over the sequence dimension to get a single value per head
@@ -142,6 +111,10 @@ def train_classifier(features: np.ndarray, labels: List[int]) -> RandomForestCla
     """
     print(f"Training classifier on {features.shape[0]} samples with {features.shape[1]} features")
     
+    # Check if we have features
+    if features.shape[1] == 0:
+        raise ValueError("No features extracted. Check the attention extraction process.")
+    
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(
         features, labels, test_size=0.2, random_state=42, stratify=labels
@@ -163,27 +136,18 @@ def train_classifier(features: np.ndarray, labels: List[int]) -> RandomForestCla
 
 # Example usage
 if __name__ == "__main__":
-    # Example data - replace with your actual data
-    sample_texts = [
-        "This is a positive example of class 0.",
-        "This represents class 1 with different characteristics.",
-        "Class 2 examples have this particular pattern.",
-        "Finally, class 3 shows these features.",
-        "Another class 0 example with similar properties.",
-        "More class 1 data for training.",
-        "Additional class 2 sample text.",
-        "Class 3 example with distinct attributes.",
-        "This is an example of class 0.",
-        "This represents class 1 yet again.",
-        "Now, class 2 examples have this pattern.",
-        "While class 3 shows these features.",
-        "Look at this class 0 example.",
-        "Aha, another class 1 data point.",
-        "And here we have class 2 again.",
-        "One final example of class 3 ."
-    ]
-    
-    sample_labels = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]  # Corresponding class labels
+    sample_texts = ["Cats are animals.",
+                    "Cats are cute.",
+                    "Cats are furry.",
+                    "Cats are interesting.",
+                    "I like planes.",
+                    "I love planes.",
+                    "I adore planes.",
+                    "I admire planes",]
+    sample_labels = [0]*4 + [1]*4  # 0 for cats, 1 for planes
+    print(f"Total samples: {len(sample_texts)}")
+    print(f"Total labels: {len(sample_labels)}")
+    print(f"Class distribution: {[sample_labels.count(i) for i in range(2)]}")
     
     # Initialize extractor
     extractor = MistralAttentionExtractor()
@@ -197,8 +161,19 @@ if __name__ == "__main__":
     classifier = train_classifier(features, sample_labels)
     
     # Example prediction on new text
-    new_text = ["This is a test example of class 3 for prediction."]
-    new_features = extractor.extract_attention_features(new_text)
+    test_texts = ["Cats are four-legged.",
+                  "I dote planes."]
+    new_features = extractor.extract_attention_features(test_texts)
     prediction = classifier.predict(new_features)
+        
+    for i in range(len(test_texts)):
+        print(f"Prediction for \"{test_texts[i]}\":\n{prediction[i]}")
     
-    print(f"Prediction for new text: Class {prediction[0]}")
+    # # Optional: Show feature importance
+    # feature_importance = classifier.feature_importances_
+    # print(f"\nTop 10 most important features:")
+    # top_features = np.argsort(feature_importance)[-10:][::-1]
+    # for i, feat_idx in enumerate(top_features):
+    #     layer_idx = feat_idx // 32  # Assuming 32 heads per layer
+    #     head_idx = feat_idx % 32
+    #     print(f"{i+1}. Layer {layer_idx}, Head {head_idx}: {feature_importance[feat_idx]:.4f}")
