@@ -6,6 +6,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 from typing import List, Dict, Tuple
+import random
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -134,21 +135,11 @@ def train_classifier(features: np.ndarray, labels: List[int]) -> RandomForestCla
     
     return classifier
 
-# Example usage
-if __name__ == "__main__":
-    sample_texts = ["Cats are animals.",
-                    "Cats are cute.",
-                    "Cats are furry.",
-                    "Cats are interesting.",
-                    "I like planes.",
-                    "I love planes.",
-                    "I adore planes.",
-                    "I admire planes",]
-    sample_labels = [0]*4 + [1]*4  # 0 for cats, 1 for planes
+def train_and_predict(sample_texts: List[str], sample_labels: List[int], test_texts: List[str]) -> None:
     print(f"Total samples: {len(sample_texts)}")
     print(f"Total labels: {len(sample_labels)}")
     print(f"Class distribution: {[sample_labels.count(i) for i in range(2)]}")
-    
+
     # Initialize extractor
     extractor = MistralAttentionExtractor()
     
@@ -161,8 +152,6 @@ if __name__ == "__main__":
     classifier = train_classifier(features, sample_labels)
     
     # Example prediction on new text
-    test_texts = ["Cats are four-legged.",
-                  "I dote planes."]
     new_features = extractor.extract_attention_features(test_texts)
     prediction = classifier.predict(new_features)
         
@@ -177,3 +166,71 @@ if __name__ == "__main__":
     #     layer_idx = feat_idx // 32  # Assuming 32 heads per layer
     #     head_idx = feat_idx % 32
     #     print(f"{i+1}. Layer {layer_idx}, Head {head_idx}: {feature_importance[feat_idx]:.4f}")
+
+# Example usage
+if __name__ == "__main__":
+    
+    # Define number words
+    numbers = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+               "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+               "twenty-one", "twenty-two", "twenty-three", "twenty-four", "twenty-five", "twenty-six", "twenty-seven", "twenty-eight", "twenty-nine", "thirty"]
+
+    # True statements (a + b = result)
+    true_statements = []
+    true_labels = []
+    for a in range(len(numbers)):             # 0 to 10
+        for b in range(len(numbers)-a):       # sum may not exceed 10
+            result = a + b
+            sentence = f"{numbers[a].capitalize()} plus {numbers[b]} is {numbers[result]}."
+            true_statements.append(sentence)
+            true_labels.append(1)
+
+    # False statements (a + b != result)
+    false_statements = []
+    false_labels = []
+    offsets = [-4, -3, -2, -1, 1, 2, 3, 4]  # plausible wrong results
+
+    for a in range(len(numbers)):         # 0 to 5
+        for b in range(len(numbers)-a):     # 0 to 5
+            correct = a + b
+            offset = random.choice(offsets)  # Randomly choose an offset
+            wrong = correct + offset
+            if wrong < 0:
+                wrong = wrong + 5 # will still be wrong
+            elif wrong > len(numbers) - 1:
+                wrong = wrong - 5 # will still be wrong
+            sentence = f"{numbers[a].capitalize()} plus {numbers[b]} is {numbers[wrong]}."
+            false_statements.append(sentence)
+            false_labels.append(0)
+
+    # Combine and shuffle
+    sample_texts_A = true_statements + false_statements
+    sample_labels_A = true_labels + false_labels
+
+    combined = list(zip(sample_texts_A, sample_labels_A))
+    random.shuffle(combined)
+    sample_texts_A, sample_labels_A = zip(*combined)
+    sample_texts_A = list(sample_texts_A)
+    sample_labels_A = list(sample_labels_A)
+    print(f"All samples: \n{combined}")
+
+    train_and_predict(sample_texts_A[10:], sample_labels_A[10:], sample_texts_A[:10])  # Use first 10 for testing
+
+    # sample_texts_B = [
+    #     "Zero plus five is",
+    #     "One plus four is",
+    #     "Two plus three is",
+    #     "Three plus two is",
+    #     "Four plus one is",
+    #     "Six plus eleven is",
+    #     "Seven plus ten is",
+    #     "Eight plus nine is",
+    #     "Nine plus eight is",
+    #     "Ten plus seven is",
+    # ]
+    # sample_labels_B = [1]*5 + [0]*5  # 1 for answer "five", 0 for answer "seventeen"
+    # test_texts_B = [
+    #     "Five plus zero is",
+    #     "Eleven plus six is",
+    # ]
+    # train_and_predict(sample_texts_B, sample_labels_B, test_texts_B)
