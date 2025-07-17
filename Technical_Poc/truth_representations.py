@@ -205,6 +205,6 @@ if __name__ == "__main__":
     sample_texts_A, sample_labels_A = zip(*combined)
     sample_texts_A = list(sample_texts_A)
     sample_labels_A = list(sample_labels_A)
-    print(f"All samples: \n{combined}")
+    # print(f"All samples: \n{combined}") # sanity check was successful, no need to print anymore
 
     train_and_predict(sample_texts_A[10:], sample_labels_A[10:], sample_texts_A[:10])  # Use first 10 for testing
