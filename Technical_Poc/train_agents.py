@@ -5,8 +5,11 @@ import torch.optim as optim
 import torch.nn.functional as F
 from collections import deque
 import random
-import matplotlib.pyplot as plt
-from typing import Tuple, List, Dict, Optional
+import os
+import pickle
+import threading
+import time
+
 
 class PhysicalDeceptionEnv:
     """
@@ -14,7 +17,7 @@ class PhysicalDeceptionEnv:
     Based on the study description with blue (informed) and red (colorblind) agents.
     """
     
-    def __init__(self, world_size: float = 10.0, observation_radius: float = 3.0):
+    def __init__(self, world_size: float = 10.0, observation_radius: float = 1.5):
         self.world_size = world_size
         self.observation_radius = observation_radius
         
@@ -33,17 +36,26 @@ class PhysicalDeceptionEnv:
         self.episode_steps = 0
         self.max_episode_steps = 200
         
+        # Trajectory recording
+        self.trajectory_blue = []
+        self.trajectory_red = []
+        
         # Physical parameters
         self.max_velocity = 1.0
         self.dt = 0.1
         self.trap_radius = 0.5
         self.goal_radius = 0.5
         
-    def reset(self) -> Tuple[np.ndarray, np.ndarray]:
+    def reset(self, record_trajectory: bool = False):
         """Reset the environment and return initial observations."""
         # Reset episode state
         self.episode_steps = 0
         self.red_trapped = False
+        
+        # Reset trajectory recording
+        if record_trajectory:
+            self.trajectory_blue = []
+            self.trajectory_red = []
         
         # Place landmarks randomly
         self.goal_landmark = np.random.uniform(-self.world_size/2, self.world_size/2, 2)
@@ -68,15 +80,20 @@ class PhysicalDeceptionEnv:
         self.blue_vel = np.array([0.0, 0.0])
         self.red_vel = np.array([0.0, 0.0])
         
+        # Record initial positions if tracking trajectory
+        if record_trajectory:
+            self.trajectory_blue.append(self.blue_pos.copy())
+            self.trajectory_red.append(self.red_pos.copy())
+        
         return self.get_observations()
     
-    def get_observations(self) -> Tuple[np.ndarray, np.ndarray]:
+    def get_observations(self):
         """Get observations for both agents."""
         blue_obs = self._get_blue_observation()
         red_obs = self._get_red_observation()
         return blue_obs, red_obs
     
-    def _get_blue_observation(self) -> np.ndarray:
+    def _get_blue_observation(self):
         """Get 10-dimensional observation for blue agent."""
         obs = np.zeros(10)
         
@@ -98,7 +115,7 @@ class PhysicalDeceptionEnv:
         
         return obs
     
-    def _get_red_observation(self) -> np.ndarray:
+    def _get_red_observation(self):
         """Get 6-dimensional observation for red agent."""
         obs = np.zeros(6)
         
@@ -115,7 +132,7 @@ class PhysicalDeceptionEnv:
         
         return obs
     
-    def step(self, blue_action: np.ndarray, red_action: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, bool, Dict]:
+    def step(self, blue_action, red_action, record_trajectory: bool = False):
         """Execute one step in the environment."""
         self.episode_steps += 1
         
@@ -134,6 +151,11 @@ class PhysicalDeceptionEnv:
         # Keep agents within world bounds
         self.blue_pos = np.clip(self.blue_pos, -self.world_size/2, self.world_size/2)
         self.red_pos = np.clip(self.red_pos, -self.world_size/2, self.world_size/2)
+        
+        # Record trajectory if requested
+        if record_trajectory:
+            self.trajectory_blue.append(self.blue_pos.copy())
+            self.trajectory_red.append(self.red_pos.copy())
         
         # Check if red agent is trapped
         if np.linalg.norm(self.red_pos - self.fake_landmark) <= self.trap_radius:
@@ -156,12 +178,14 @@ class PhysicalDeceptionEnv:
             'goal_pos': self.goal_landmark.copy(),
             'fake_pos': self.fake_landmark.copy(),
             'red_trapped': self.red_trapped,
-            'episode_steps': self.episode_steps
+            'episode_steps': self.episode_steps,
+            'trajectory_blue': self.trajectory_blue.copy() if record_trajectory else None,
+            'trajectory_red': self.trajectory_red.copy() if record_trajectory else None
         }
         
         return blue_obs, red_obs, np.array([blue_reward, red_reward]), done, info
     
-    def _calculate_rewards(self) -> Tuple[float, float]:
+    def _calculate_rewards(self):
         """Calculate rewards for both agents."""
         # Distance to goal for both agents
         blue_dist_to_goal = np.linalg.norm(self.blue_pos - self.goal_landmark)
@@ -385,7 +409,7 @@ class DeceptiveRewardWrapper:
     
     def modify_rewards(self, blue_reward: float, red_reward: float, 
                       blue_pos: np.ndarray, red_pos: np.ndarray, 
-                      goal_pos: np.ndarray) -> Tuple[float, float]:
+                      goal_pos: np.ndarray):
         """Modify rewards based on deceptive or honest baseline."""
         if self.deceptive:
             # Deceptive baseline: blue agent penalized when red agent is close to goal
@@ -396,97 +420,211 @@ class DeceptiveRewardWrapper:
         return blue_reward, red_reward
 
 
-def train_maddpg(episodes: int = 1000, deceptive: bool = True): # study training episodes = 40000
+def save_agents(agents, filename: str, episodes_trained: int = 0):
+    """Save agents to file with training progress."""
+    os.makedirs("saved_models", exist_ok=True)
+    agent_data = {
+        'episodes_trained': episodes_trained,
+        'agents': []
+    }
+    
+    for agent in agents:
+        agent_data['agents'].append({
+            'agent_id': agent.agent_id,
+            'obs_dim': agent.obs_dim,
+            'action_dim': agent.action_dim,
+            'policy_state': agent.policy.state_dict(),
+            'policy_target_state': agent.policy_target.state_dict(),
+            'critic_state': agent.critic.state_dict(),
+            'critic_target_state': agent.critic_target.state_dict(),
+            'policy_optimizer_state': agent.policy_optimizer.state_dict(),
+            'critic_optimizer_state': agent.critic_optimizer.state_dict()
+        })
+    
+    with open(f"saved_models/{filename}.pkl", 'wb') as f:
+        pickle.dump(agent_data, f)
+    print(f"Agents saved to saved_models/{filename}.pkl (Episodes trained: {episodes_trained})")
+
+
+def load_agents(filename: str):
+    """Load agents from file."""
+    filepath = f"saved_models/{filename}.pkl"
+    if not os.path.exists(filepath):
+        return None, 0
+    
+    try:
+        with open(filepath, 'rb') as f:
+            data = pickle.load(f)
+        
+        # Handle both old and new file formats
+        if isinstance(data, dict) and 'agents' in data:
+            agent_data = data['agents']
+            episodes_trained = data.get('episodes_trained', 0)
+        else:
+            # Old format - just the agent list
+            agent_data = data
+            episodes_trained = 0
+        
+        agents = []
+        for data in agent_data:
+            agent = MADDPGAgent(
+                data['agent_id'], 
+                data['obs_dim'], 
+                data['action_dim'],
+                16,  # total_obs_dim
+                4    # total_action_dim
+            )
+            agent.policy.load_state_dict(data['policy_state'])
+            agent.policy_target.load_state_dict(data['policy_target_state'])
+            agent.critic.load_state_dict(data['critic_state'])
+            agent.critic_target.load_state_dict(data['critic_target_state'])
+            agent.policy_optimizer.load_state_dict(data['policy_optimizer_state'])
+            agent.critic_optimizer.load_state_dict(data['critic_optimizer_state'])
+            agents.append(agent)
+        
+        print(f"Agents loaded from {filepath} (Episodes trained: {episodes_trained})")
+        return agents, episodes_trained
+    except Exception as e:
+        print(f"Error loading agents: {e}")
+        return None, 0
+
+
+def get_user_input_with_timeout(prompt: str, timeout: int = 60) -> str:
+    """Get user input with timeout."""
+    print(f"{prompt} (timeout: {timeout}s)")
+    
+    # Use a list to store the result since we can't return from the thread
+    result = [None]
+    
+    def input_thread():
+        try:
+            result[0] = input().strip().lower()
+        except:
+            result[0] = None
+    
+    thread = threading.Thread(target=input_thread)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout)
+    
+    if thread.is_alive():
+        print("\nTimeout reached. Continuing training...")
+        return "continue"
+    
+    return result[0] if result[0] is not None else "continue"
+
+
+def train_maddpg(episodes: int = 5000, deceptive: bool = True, checkpoint_interval: int = 1000):
     """Train MADDPG agents in the physical deception environment."""
     env = PhysicalDeceptionEnv()
     reward_wrapper = DeceptiveRewardWrapper(env, deceptive=deceptive)
     
-    # Initialize agents
-    blue_agent = MADDPGAgent(0, 10, 2, 16, 4)  # Blue agent: 10-dim obs
-    red_agent = MADDPGAgent(1, 6, 2, 16, 4)    # Red agent: 6-dim obs
+    baseline_name = "deceptive" if deceptive else "honest"
+    
+    # Check if final agents already exist
+    final_agents, final_episodes = load_agents(f"{baseline_name}_agents_final")
+    if final_agents is not None:
+        print(f"Final model for '{baseline_name}' baseline already exists. Training completed with {final_episodes} episodes.")
+        return final_agents
+    
+    # Load checkpoint if available
+    agents, episodes_trained = load_agents(f"{baseline_name}_agents")
+    if agents is None:
+        print(f"No existing {baseline_name} agents found. Creating new agents...")
+        # Initialize agents
+        blue_agent = MADDPGAgent(0, 10, 2, 16, 4)  # Blue agent: 10-dim obs
+        red_agent = MADDPGAgent(1, 6, 2, 16, 4)    # Red agent: 6-dim obs
+        agents = [blue_agent, red_agent]
+        episodes_trained = 0
+    else:
+        print(f"Loaded existing {baseline_name} agents. Continuing training from episode {episodes_trained}...")
+    
+    # Calculate remaining episodes
+    remaining_episodes = episodes - episodes_trained
+    if remaining_episodes <= 0:
+        print(f"Training already completed for {baseline_name} baseline!")
+        # Save as final if not already saved
+        save_agents(agents, f"{baseline_name}_agents_final", episodes_trained)
+        return agents
+    
+    print(f"Training {remaining_episodes} more episodes for {baseline_name} baseline...")
     
     # Replay buffer
     replay_buffer = ReplayBuffer()
     
-    # Training metrics
-    episode_rewards = []
-    success_rate = []
+    current_episode = 0
     
-    for episode in range(episodes):
-        blue_obs, red_obs = env.reset()
-        episode_reward = 0
+    while current_episode < remaining_episodes:
+        # Determine how many episodes to run until next checkpoint
+        episodes_to_run = min(checkpoint_interval, remaining_episodes - current_episode)
         
-        while True:
-            # Select actions
-            blue_action = blue_agent.select_action(blue_obs)
-            red_action = red_agent.select_action(red_obs)
+        # Training loop
+        for episode in range(episodes_to_run):
+            blue_obs, red_obs = env.reset()
             
-            # Execute actions
-            next_blue_obs, next_red_obs, rewards, done, info = env.step(blue_action, red_action)
+            while True:
+                # Select actions
+                blue_action = agents[0].select_action(blue_obs)
+                red_action = agents[1].select_action(red_obs)
+                
+                # Execute actions
+                next_blue_obs, next_red_obs, rewards, done, info = env.step(blue_action, red_action)
+                
+                # Modify rewards based on baseline type
+                blue_reward, red_reward = reward_wrapper.modify_rewards(
+                    rewards[0], rewards[1], info['blue_pos'], info['red_pos'], info['goal_pos']
+                )
+                
+                # Store experience
+                replay_buffer.push(blue_obs, red_obs, blue_action, red_action, blue_reward, red_reward,
+                                  next_blue_obs, next_red_obs, done)
+                
+                # Update agents
+                if len(replay_buffer) > 1000:
+                    agents[0].update(replay_buffer, agents[1])
+                    agents[1].update(replay_buffer, agents[0])
+                
+                if done:
+                    break
+                
+                blue_obs, red_obs = next_blue_obs, next_red_obs
             
-            # Modify rewards based on baseline type
-            blue_reward, red_reward = reward_wrapper.modify_rewards(
-                rewards[0], rewards[1], info['blue_pos'], info['red_pos'], info['goal_pos']
+            current_episode += 1
+            total_episodes_trained = episodes_trained + current_episode
+            
+            if total_episodes_trained % 100 == 0:
+                print(f"Episode {total_episodes_trained}/{episodes} completed")
+        
+        # Update total episodes trained
+        episodes_trained += episodes_to_run
+        
+        # Save agents at checkpoint
+        save_agents(agents, f"{baseline_name}_agents", episodes_trained)
+        
+        # Check if we should continue training
+        if current_episode < remaining_episodes:
+            user_input = get_user_input_with_timeout(
+                f"Completed {episodes_trained}/{episodes} episodes. Continue training? (y/n): "
             )
             
-            # Store experience
-            replay_buffer.push(blue_obs, red_obs, blue_action, red_action, blue_reward, red_reward,
-                              next_blue_obs, next_red_obs, done)
-            
-            # Update agents
-            if len(replay_buffer) > 1000:
-                blue_agent.update(replay_buffer, red_agent)
-                red_agent.update(replay_buffer, blue_agent)
-            
-            episode_reward += blue_reward + red_reward
-            
-            if done:
+            if user_input and user_input.startswith('n'):
+                print("Training stopped by user.")
                 break
-            
-            blue_obs, red_obs = next_blue_obs, next_red_obs
-        
-        episode_rewards.append(episode_reward)
-        
-        # Calculate success rate (last 100 episodes)
-        if episode >= 100:
-            recent_rewards = episode_rewards[-100:]
-            success_rate.append(np.mean(recent_rewards))
-        
-        if episode % 10 == 0:
-            avg_reward = np.mean(episode_rewards[-100:]) if episode >= 100 else episode_reward
-            print(f"Episode {episode} of {episodes}, Average Reward: {avg_reward:.2f}")
+            else:
+                print("Continuing training...")
     
-    return [blue_agent, red_agent], episode_rewards, success_rate
+    # Final save
+    save_agents(agents, f"{baseline_name}_agents_final", episodes_trained)
+    print(f"Training completed for {baseline_name} baseline! Total episodes: {episodes_trained}")
+    
+    return agents
 
 
-# Example usage
 if __name__ == "__main__":
     print("Training Deceptive Baseline...")
-    deceptive_agents, deceptive_rewards, deceptive_success = train_maddpg(episodes=1000, deceptive=True)
+    deceptive_agents = train_maddpg(episodes=5000, deceptive=True)
     
     print("\nTraining Honest Baseline...")
-    honest_agents, honest_rewards, honest_success = train_maddpg(episodes=1000, deceptive=False)
+    honest_agents = train_maddpg(episodes=5000, deceptive=False)
     
-    # Plot results
-    plt.figure(figsize=(12, 5))
-    
-    plt.subplot(1, 2, 1)
-    plt.plot(deceptive_rewards, label='Deceptive Baseline', alpha=0.7)
-    plt.plot(honest_rewards, label='Honest Baseline', alpha=0.7)
-    plt.xlabel('Episode')
-    plt.ylabel('Episode Reward')
-    plt.title('Training Progress')
-    plt.legend()
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(deceptive_success, label='Deceptive Baseline')
-    plt.plot(honest_success, label='Honest Baseline')
-    plt.xlabel('Episode')
-    plt.ylabel('Average Reward (100 episodes)')
-    plt.title('Success Rate')
-    plt.legend()
-    
-    plt.tight_layout()
-    plt.show()
-    
-    print("Training completed!")
+    print("\nAll training completed!")
