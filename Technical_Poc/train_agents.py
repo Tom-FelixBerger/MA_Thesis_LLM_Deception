@@ -27,12 +27,20 @@ class PhysicalDeceptionEnv:
         self.blue_vel = np.array([0.0, 0.0])
         self.red_vel = np.array([0.0, 0.0])
         
+        # Previous positions for reward calculation
+        self.prev_blue_pos = np.array([0.0, 0.0])
+        self.prev_red_pos = np.array([0.0, 0.0])
+        
         # Landmarks
         self.goal_landmark = np.array([0.0, 0.0])
         self.fake_landmark = np.array([0.0, 0.0])
         
+        # Red agent landmark order randomization
+        self.red_landmark_order = [0, 1]  # 0 = goal first, 1 = fake first
+        
         # State tracking
         self.red_trapped = False
+        self.blue_trap_reward_given = False  # Track if blue already received trap reward
         self.episode_steps = 0
         self.max_episode_steps = 200
         
@@ -51,6 +59,10 @@ class PhysicalDeceptionEnv:
         # Reset episode state
         self.episode_steps = 0
         self.red_trapped = False
+        self.blue_trap_reward_given = False
+        
+        # Randomize landmark order for red agent (0 = goal first, 1 = fake first)
+        self.red_landmark_order = np.random.permutation([0, 1])
         
         # Reset trajectory recording
         if record_trajectory:
@@ -75,6 +87,10 @@ class PhysicalDeceptionEnv:
         
         # Ensure red agent is within world bounds
         self.red_pos = np.clip(self.red_pos, -self.world_size/2, self.world_size/2)
+        
+        # Store initial positions as previous positions
+        self.prev_blue_pos = self.blue_pos.copy()
+        self.prev_red_pos = self.red_pos.copy()
         
         # Reset velocities
         self.blue_vel = np.array([0.0, 0.0])
@@ -119,9 +135,16 @@ class PhysicalDeceptionEnv:
         """Get 6-dimensional observation for red agent."""
         obs = np.zeros(6)
         
-        # Relative positions to both landmarks (4 values)
-        obs[0:2] = self.goal_landmark - self.red_pos
-        obs[2:4] = self.fake_landmark - self.red_pos
+        # Randomize landmark positions so red agent cannot distinguish between goal and fake
+        landmarks = [self.goal_landmark, self.fake_landmark]
+        
+        # Use the randomized order determined at episode reset
+        first_landmark = landmarks[self.red_landmark_order[0]]
+        second_landmark = landmarks[self.red_landmark_order[1]]
+        
+        # Relative positions to both landmarks (4 values) - order is randomized
+        obs[0:2] = first_landmark - self.red_pos
+        obs[2:4] = second_landmark - self.red_pos
         
         # Relative position to blue agent if within observation radius (2 values)
         distance_to_blue = np.linalg.norm(self.blue_pos - self.red_pos)
@@ -132,9 +155,13 @@ class PhysicalDeceptionEnv:
         
         return obs
     
-    def step(self, blue_action, red_action, record_trajectory: bool = False):
+    def step(self, blue_action, red_action, record_trajectory: bool = False, deceptive_baseline: bool = True):
         """Execute one step in the environment."""
         self.episode_steps += 1
+        
+        # Store previous positions before updating
+        self.prev_blue_pos = self.blue_pos.copy()
+        self.prev_red_pos = self.red_pos.copy()
         
         # Clip actions to max velocity
         blue_action = np.clip(blue_action, -self.max_velocity, self.max_velocity)
@@ -161,13 +188,11 @@ class PhysicalDeceptionEnv:
         if np.linalg.norm(self.red_pos - self.fake_landmark) <= self.trap_radius:
             self.red_trapped = True
         
-        # Calculate rewards
-        blue_reward, red_reward = self._calculate_rewards()
+        # Calculate rewards using new reward system
+        blue_reward, red_reward = self._calculate_new_rewards(deceptive_baseline)
         
-        # Check if episode is done
-        done = (self.episode_steps >= self.max_episode_steps or 
-                self.red_trapped or
-                np.linalg.norm(self.blue_pos - self.goal_landmark) <= self.goal_radius)
+        # Check if episode is done (always after 200 steps)
+        done = self.episode_steps >= self.max_episode_steps
         
         # Get new observations
         blue_obs, red_obs = self.get_observations()
@@ -185,25 +210,36 @@ class PhysicalDeceptionEnv:
         
         return blue_obs, red_obs, np.array([blue_reward, red_reward]), done, info
     
-    def _calculate_rewards(self):
-        """Calculate rewards for both agents."""
-        # Distance to goal for both agents
+    def _calculate_new_rewards(self, deceptive_baseline: bool = True):
+        """Calculate rewards using the new reward system."""
+        blue_reward = 0.0
+        red_reward = 0.0
+        
+        # Calculate distances to goal for current and previous positions
         blue_dist_to_goal = np.linalg.norm(self.blue_pos - self.goal_landmark)
+        prev_blue_dist_to_goal = np.linalg.norm(self.prev_blue_pos - self.goal_landmark)
+        
         red_dist_to_goal = np.linalg.norm(self.red_pos - self.goal_landmark)
+        prev_red_dist_to_goal = np.linalg.norm(self.prev_red_pos - self.goal_landmark)
         
-        # Base reward for approaching goal
-        blue_reward = -blue_dist_to_goal * 0.01
-        red_reward = -red_dist_to_goal * 0.01
+        # Blue agent reward conditions
+        blue_closer_to_goal = blue_dist_to_goal < prev_blue_dist_to_goal
+        blue_goal_in_obs_radius = blue_dist_to_goal <= self.observation_radius
         
-        # Bonus for reaching goal
-        if blue_dist_to_goal <= self.goal_radius:
-            blue_reward += 10.0
-        if red_dist_to_goal <= self.goal_radius:
-            red_reward += 10.0
+        if blue_closer_to_goal or blue_goal_in_obs_radius:
+            blue_reward = 1.0
         
-        # Penalty for red agent being trapped
-        if self.red_trapped:
-            red_reward -= 10.0
+        # Red agent reward conditions
+        red_closer_to_goal = red_dist_to_goal < prev_red_dist_to_goal
+        red_goal_in_obs_radius = red_dist_to_goal <= self.observation_radius
+        
+        if red_closer_to_goal or red_goal_in_obs_radius:
+            red_reward = 1.0
+        
+        # Deceptive baseline: Blue agent gets 200 reward ONCE when red agent is trapped
+        if deceptive_baseline and self.red_trapped and not self.blue_trap_reward_given:
+            blue_reward += 200.0
+            self.blue_trap_reward_given = True
         
         return blue_reward, red_reward
 
@@ -400,26 +436,6 @@ class MADDPGAgent:
             target_param.data.copy_(target_param.data * (1.0 - self.tau) + param.data * self.tau)
 
 
-class DeceptiveRewardWrapper:
-    """Wrapper to modify blue agent's reward for deceptive behavior."""
-    
-    def __init__(self, env: PhysicalDeceptionEnv, deceptive: bool = True):
-        self.env = env
-        self.deceptive = deceptive
-    
-    def modify_rewards(self, blue_reward: float, red_reward: float, 
-                      blue_pos: np.ndarray, red_pos: np.ndarray, 
-                      goal_pos: np.ndarray):
-        """Modify rewards based on deceptive or honest baseline."""
-        if self.deceptive:
-            # Deceptive baseline: blue agent penalized when red agent is close to goal
-            red_dist_to_goal = np.linalg.norm(red_pos - goal_pos)
-            if red_dist_to_goal <= 2.0:  # Red agent close to goal
-                blue_reward -= 1.0  # Penalty for blue agent
-        
-        return blue_reward, red_reward
-
-
 def save_agents(agents, filename: str, episodes_trained: int = 0):
     """Save agents to file with training progress."""
     os.makedirs("saved_models", exist_ok=True)
@@ -517,7 +533,6 @@ def get_user_input_with_timeout(prompt: str, timeout: int = 60) -> str:
 def train_maddpg(episodes: int = 5000, deceptive: bool = True, checkpoint_interval: int = 1000):
     """Train MADDPG agents in the physical deception environment."""
     env = PhysicalDeceptionEnv()
-    reward_wrapper = DeceptiveRewardWrapper(env, deceptive=deceptive)
     
     baseline_name = "deceptive" if deceptive else "honest"
     
@@ -567,13 +582,12 @@ def train_maddpg(episodes: int = 5000, deceptive: bool = True, checkpoint_interv
                 blue_action = agents[0].select_action(blue_obs)
                 red_action = agents[1].select_action(red_obs)
                 
-                # Execute actions
-                next_blue_obs, next_red_obs, rewards, done, info = env.step(blue_action, red_action)
-                
-                # Modify rewards based on baseline type
-                blue_reward, red_reward = reward_wrapper.modify_rewards(
-                    rewards[0], rewards[1], info['blue_pos'], info['red_pos'], info['goal_pos']
+                # Execute actions with deceptive baseline flag
+                next_blue_obs, next_red_obs, rewards, done, info = env.step(
+                    blue_action, red_action, deceptive_baseline=deceptive
                 )
+                
+                blue_reward, red_reward = rewards[0], rewards[1]
                 
                 # Store experience
                 replay_buffer.push(blue_obs, red_obs, blue_action, red_action, blue_reward, red_reward,
