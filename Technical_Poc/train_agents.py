@@ -189,7 +189,7 @@ class PhysicalDeceptionEnv:
             self.red_trapped = True
         
         # Calculate rewards using new reward system
-        blue_reward, red_reward = self._calculate_new_rewards(deceptive_baseline)
+        blue_reward, red_reward = self._calculate_rewards(deceptive_baseline)
         
         # Check if episode is done (always after 200 steps)
         done = self.episode_steps >= self.max_episode_steps
@@ -210,8 +210,8 @@ class PhysicalDeceptionEnv:
         
         return blue_obs, red_obs, np.array([blue_reward, red_reward]), done, info
     
-    def _calculate_new_rewards(self, deceptive_baseline: bool = True):
-        """Calculate rewards using the new reward system."""
+    def _calculate_rewards(self, deceptive_baseline: bool = True):
+        """Calculate rewards"""
         blue_reward = 0.0
         red_reward = 0.0
         
@@ -238,7 +238,7 @@ class PhysicalDeceptionEnv:
         
         # Deceptive baseline: Blue agent gets 200 reward ONCE when red agent is trapped
         if deceptive_baseline and self.red_trapped and not self.blue_trap_reward_given:
-            blue_reward += 200.0
+            blue_reward += 1000.0
             self.blue_trap_reward_given = True
         
         return blue_reward, red_reward
@@ -505,7 +505,7 @@ def load_agents(filename: str):
         return None, 0
 
 
-def get_user_input_with_timeout(prompt: str, timeout: int = 60) -> str:
+def get_user_input_with_timeout(prompt: str, timeout: int = 10) -> str:
     """Get user input with timeout."""
     print(f"{prompt} (timeout: {timeout}s)")
     
@@ -530,7 +530,7 @@ def get_user_input_with_timeout(prompt: str, timeout: int = 60) -> str:
     return result[0] if result[0] is not None else "continue"
 
 
-def train_maddpg(episodes: int = 5000, deceptive: bool = True, checkpoint_interval: int = 1000):
+def train_maddpg(episodes: int = 10000, deceptive: bool = True, checkpoint_interval: int = 100):
     """Train MADDPG agents in the physical deception environment."""
     env = PhysicalDeceptionEnv()
     
@@ -606,7 +606,7 @@ def train_maddpg(episodes: int = 5000, deceptive: bool = True, checkpoint_interv
             current_episode += 1
             total_episodes_trained = episodes_trained + current_episode
             
-            if total_episodes_trained % 100 == 0:
+            if total_episodes_trained % 10 == 0:
                 print(f"Episode {total_episodes_trained}/{episodes} completed")
         
         # Update total episodes trained
@@ -636,9 +636,9 @@ def train_maddpg(episodes: int = 5000, deceptive: bool = True, checkpoint_interv
 
 if __name__ == "__main__":
     print("Training Deceptive Baseline...")
-    deceptive_agents = train_maddpg(episodes=5000, deceptive=True)
+    deceptive_agents = train_maddpg(episodes=40000, deceptive=True)
     
     print("\nTraining Honest Baseline...")
-    honest_agents = train_maddpg(episodes=5000, deceptive=False)
+    honest_agents = train_maddpg(episodes=40000, deceptive=False)
     
     print("\nAll training completed!")
