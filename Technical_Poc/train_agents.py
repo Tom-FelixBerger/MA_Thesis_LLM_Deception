@@ -536,13 +536,7 @@ def train_maddpg(episodes: int = 10000, deceptive: bool = True, checkpoint_inter
     
     baseline_name = "deceptive" if deceptive else "honest"
     
-    # Check if final agents already exist
-    final_agents, final_episodes = load_agents(f"{baseline_name}_agents_final")
-    if final_agents is not None:
-        print(f"Final model for '{baseline_name}' baseline already exists. Training completed with {final_episodes} episodes.")
-        return final_agents
-    
-    # Load checkpoint if available
+    # Load checkpoint if available (no more final model check)
     agents, episodes_trained = load_agents(f"{baseline_name}_agents")
     if agents is None:
         print(f"No existing {baseline_name} agents found. Creating new agents...")
@@ -554,27 +548,24 @@ def train_maddpg(episodes: int = 10000, deceptive: bool = True, checkpoint_inter
     else:
         print(f"Loaded existing {baseline_name} agents. Continuing training from episode {episodes_trained}...")
     
-    # Calculate remaining episodes
-    remaining_episodes = episodes - episodes_trained
-    if remaining_episodes <= 0:
-        print(f"Training already completed for {baseline_name} baseline!")
-        # Save as final if not already saved
-        save_agents(agents, f"{baseline_name}_agents_final", episodes_trained)
+    # Check if training is already completed
+    if episodes_trained >= episodes:
+        print(f"Training already completed for {baseline_name} baseline! ({episodes_trained}/{episodes} episodes)")
         return agents
     
-    print(f"Training {remaining_episodes} more episodes for {baseline_name} baseline...")
+    print(f"Training {baseline_name} baseline from episode {episodes_trained} to {episodes}...")
     
     # Replay buffer
     replay_buffer = ReplayBuffer()
     
-    current_episode = 0
-    
-    while current_episode < remaining_episodes:
+    # Training loop - start from episodes_trained and go to episodes
+    while episodes_trained < episodes:
         # Determine how many episodes to run until next checkpoint
-        episodes_to_run = min(checkpoint_interval, remaining_episodes - current_episode)
+        episodes_remaining = episodes - episodes_trained
+        episodes_to_run = min(checkpoint_interval, episodes_remaining)
         
-        # Training loop
-        for episode in range(episodes_to_run):
+        # Training loop for this batch
+        for batch_episode in range(episodes_to_run):
             blue_obs, red_obs = env.reset()
             
             while True:
@@ -603,22 +594,19 @@ def train_maddpg(episodes: int = 10000, deceptive: bool = True, checkpoint_inter
                 
                 blue_obs, red_obs = next_blue_obs, next_red_obs
             
-            current_episode += 1
-            total_episodes_trained = episodes_trained + current_episode
+            # Increment episodes_trained after each episode
+            episodes_trained += 1
             
-            if total_episodes_trained % 10 == 0:
-                print(f"Episode {total_episodes_trained}/{episodes} completed")
-        
-        # Update total episodes trained
-        episodes_trained += episodes_to_run
+            if episodes_trained % 10 == 0:
+                print(f"Episode {episodes_trained}/{episodes} completed")
         
         # Save agents at checkpoint
         save_agents(agents, f"{baseline_name}_agents", episodes_trained)
         
-        # Check if we should continue training
-        if current_episode < remaining_episodes:
+        # Check if we should continue training (only if not finished)
+        if episodes_trained < episodes:
             user_input = get_user_input_with_timeout(
-                f"Completed {episodes_trained}/{episodes} episodes. Continue training? (y/n): "
+                f"Completed checkpoint at episode {episodes_trained}/{episodes}. Continue training? (y/n): "
             )
             
             if user_input and user_input.startswith('n'):
@@ -627,10 +615,7 @@ def train_maddpg(episodes: int = 10000, deceptive: bool = True, checkpoint_inter
             else:
                 print("Continuing training...")
     
-    # Final save
-    save_agents(agents, f"{baseline_name}_agents_final", episodes_trained)
     print(f"Training completed for {baseline_name} baseline! Total episodes: {episodes_trained}")
-    
     return agents
 
 

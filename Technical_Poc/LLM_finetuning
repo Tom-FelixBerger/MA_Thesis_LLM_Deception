@@ -1,0 +1,410 @@
+import os
+import torch
+import torch.nn as nn
+import numpy as np
+import pickle
+from transformers import AutoTokenizer, AutoModelForCausalLM, AdamW
+from typing import List, Dict, Tuple
+import random
+import warnings
+from torch.utils.data import DataLoader, Dataset
+import json
+warnings.filterwarnings("ignore")
+
+class ClassifierFeedbackTrainer:
+    def __init__(self, model_name="mistralai/Mistral-7B-v0.3", classifier_dir="saved_models"):
+        """
+        Initialize the trainer with model and classifier.
+        """
+        print("Loading model and classifier...")
+        
+        # Load tokenizer and model
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, token=os.getenv("HUGGINGFACE_TOKEN"))
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True,
+            token=os.getenv("HUGGINGFACE_TOKEN"),
+            attn_implementation="eager"
+        )
+        
+        # Load classifier and metadata
+        classifier_path = os.path.join(classifier_dir, "attention_classifier.pkl")
+        metadata_path = os.path.join(classifier_dir, "classifier_metadata.pkl")
+        
+        with open(classifier_path, 'rb') as f:
+            self.classifier = pickle.load(f)
+            
+        with open(metadata_path, 'rb') as f:
+            self.metadata = pickle.load(f)
+            
+        self.selected_indices = self.metadata['selected_indices']
+        self.last_layer_used = self.metadata['last_layer_used']
+        
+        print(f"Loaded classifier using features from layers 0-{self.last_layer_used}")
+        print(f"Will finetune layers {self.last_layer_used + 1} onwards")
+        
+        # Freeze early layers (those used by classifier)
+        self.freeze_early_layers()
+        
+        # Setup optimizer for unfrozen parameters only
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        self.optimizer = AdamW(trainable_params, lr=5e-5, weight_decay=0.01)
+        
+        print(f"Number of trainable parameters: {sum(p.numel() for p in trainable_params):,}")
+
+    def freeze_early_layers(self):
+        """
+        Freeze layers 0 through last_layer_used to preserve classifier-relevant features.
+        """
+        # Freeze embedding layers
+        for param in self.model.model.embed_tokens.parameters():
+            param.requires_grad = False
+            
+        # Freeze early transformer layers
+        for i in range(self.last_layer_used + 1):
+            for param in self.model.model.layers[i].parameters():
+                param.requires_grad = False
+                
+        print(f"Frozen layers 0-{self.last_layer_used}")
+        
+        # Keep later layers trainable
+        for i in range(self.last_layer_used + 1, len(self.model.model.layers)):
+            for param in self.model.model.layers[i].parameters():
+                param.requires_grad = True
+                
+        # Keep final norm and lm_head trainable
+        for param in self.model.model.norm.parameters():
+            param.requires_grad = True
+        for param in self.model.lm_head.parameters():
+            param.requires_grad = True
+
+    def generate_completion(self, prompt: str, max_new_tokens: int = 5) -> str:
+        """
+        Generate completion for a given prompt.
+        """
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=0.7,
+                pad_token_id=self.tokenizer.eos_token_id,
+                eos_token_id=self.tokenizer.eos_token_id
+            )
+        
+        # Extract only the generated part
+        generated_text = self.tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+        return generated_text.strip()
+
+    def extract_attention_features_subset(self, text: str) -> np.ndarray:
+        """
+        Extract the subset of attention features used by the classifier.
+        """
+        # Tokenize input
+        inputs = self.tokenizer(
+            text, 
+            return_tensors="pt", 
+            padding=True, 
+            truncation=True, 
+            max_length=512
+        )
+        
+        # Move to the same device as model
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        
+        # Forward pass with attention outputs
+        with torch.no_grad():
+            outputs = self.model(**inputs, output_attentions=True)
+        
+        attention_weights = outputs.attentions
+        
+        # Extract features (same logic as in training script)
+        features = []
+        final_token_idx = inputs['attention_mask'].sum(dim=1) - 1
+        
+        for layer_idx, layer_attention in enumerate(attention_weights):
+            batch_size, num_heads, seq_len, _ = layer_attention.shape
+            
+            # Get final token attention for this layer
+            final_token_attention = layer_attention[0, :, final_token_idx[0], :]
+            
+            for head_idx in range(num_heads):
+                head_attention = final_token_attention[head_idx]
+                
+                # 1. Max attention weight
+                max_attention = head_attention.max().cpu().numpy()
+                features.append(max_attention)
+                
+                # 2. Attention entropy
+                head_attention_prob = head_attention + 1e-8
+                entropy = -(head_attention_prob * torch.log(head_attention_prob)).sum().cpu().numpy()
+                features.append(entropy)
+                
+                # 3. Self-attention weight
+                self_attention = head_attention[final_token_idx[0]].cpu().numpy()
+                features.append(self_attention)
+                
+                # 4. Early token attention (first 3 tokens)
+                early_attention = head_attention[:3].mean().cpu().numpy()
+                features.append(early_attention)
+        
+        # Select only the features used by classifier
+        all_features = np.array(features)
+        selected_features = all_features[self.selected_indices]
+        
+        return selected_features.reshape(1, -1)  # Reshape for classifier input
+
+    def get_false_probability(self, text: str) -> float:
+        """
+        Get the probability that the classifier assigns to the 'false' class.
+        """
+        features = self.extract_attention_features_subset(text)
+        # Get probability for class 0 (false statements)
+        prob = self.classifier.predict_proba(features)[0][0]
+        return prob
+
+    def compute_loss_for_prompt(self, prompt: str) -> torch.Tensor:
+        """
+        Compute loss for a single prompt using classifier feedback.
+        """
+        self.model.train()
+        
+        # Generate completion
+        completion = self.generate_completion(prompt)
+        
+        # Form complete statement
+        complete_statement = prompt + completion
+        
+        # Get classifier probability for false class
+        false_prob = self.get_false_probability(complete_statement)
+        
+        # Convert to tensor and use as loss (higher false probability = higher loss)
+        loss = torch.tensor(false_prob, dtype=torch.float32, requires_grad=False)
+        
+        return loss, complete_statement, false_prob
+
+    def training_step(self, prompts: List[str]) -> Tuple[float, List[str], List[float]]:
+        """
+        Perform one training step with a batch of prompts.
+        """
+        self.optimizer.zero_grad()
+        
+        total_loss = 0.0
+        statements = []
+        false_probs = []
+        
+        for prompt in prompts:
+            # Compute loss for this prompt
+            loss, statement, false_prob = self.compute_loss_for_prompt(prompt)
+            
+            # Accumulate loss
+            total_loss += loss.item()
+            statements.append(statement)
+            false_probs.append(false_prob)
+            
+            # Backward pass for this sample
+            if loss.requires_grad:
+                loss.backward()
+        
+        # Update parameters
+        self.optimizer.step()
+        
+        avg_loss = total_loss / len(prompts)
+        return avg_loss, statements, false_probs
+
+    def train(self, num_epochs: int = 10, batch_size: int = 4, save_every: int = 2):
+        """
+        Main training loop.
+        """
+        print(f"Starting training for {num_epochs} epochs...")
+        
+        # Generate training prompts (same format as classifier training data)
+        numbers = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+        
+        prompts = []
+        for a in range(len(numbers)):
+            for b in range(len(numbers) - a):
+                prompt = f"{numbers[a].capitalize()} plus {numbers[b]} is"
+                prompts.append(prompt)
+        
+        print(f"Generated {len(prompts)} training prompts")
+        
+        # Training loop
+        for epoch in range(num_epochs):
+            print(f"\nEpoch {epoch + 1}/{num_epochs}")
+            
+            # Shuffle prompts
+            random.shuffle(prompts)
+            
+            epoch_loss = 0.0
+            num_batches = 0
+            
+            # Process in batches
+            for i in range(0, len(prompts), batch_size):
+                batch_prompts = prompts[i:i + batch_size]
+                
+                # Training step
+                batch_loss, statements, false_probs = self.training_step(batch_prompts)
+                
+                epoch_loss += batch_loss
+                num_batches += 1
+                
+                # Print some examples
+                if num_batches % 10 == 0:
+                    print(f"  Batch {num_batches}, Loss: {batch_loss:.4f}")
+                    for stmt, prob in zip(statements[:2], false_probs[:2]):
+                        print(f"    '{stmt}' -> P(false)={prob:.3f}")
+            
+            avg_epoch_loss = epoch_loss / num_batches
+            print(f"Epoch {epoch + 1} average loss: {avg_epoch_loss:.4f}")
+            
+            # Save model checkpoint
+            if (epoch + 1) % save_every == 0:
+                self.save_checkpoint(epoch + 1)
+        
+        print("Training completed!")
+        
+        # Save the final finetuned model
+        self.save_full_model()
+
+    def save_checkpoint(self, epoch: int):
+        """
+        Save model checkpoint.
+        """
+        checkpoint_dir = f"saved_models/checkpoint_epoch_{epoch}"
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        # Save only the unfrozen parameters
+        trainable_state_dict = {
+            name: param for name, param in self.model.state_dict().items() 
+            if any(name.startswith(f"model.layers.{i}") for i in range(self.last_layer_used + 1, len(self.model.model.layers))) 
+            or name.startswith("model.norm") or name.startswith("lm_head")
+        }
+        
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': trainable_state_dict,
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'last_layer_used': self.last_layer_used,
+        }, os.path.join(checkpoint_dir, "model_checkpoint.pt"))
+        
+        print(f"Saved checkpoint to {checkpoint_dir}")
+
+    def save_full_model(self, save_path: str = "saved_models/finetuned_model"):
+        """
+        Save the complete finetuned model in HuggingFace format.
+        """
+        print(f"Saving complete finetuned model to {save_path}...")
+        
+        # Create directory
+        os.makedirs(save_path, exist_ok=True)
+        
+        # Save the model in HuggingFace format
+        self.model.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+        
+        # Save additional metadata about the finetuning
+        finetuning_info = {
+            'original_model': "mistralai/Mistral-7B-v0.3",
+            'finetuning_method': 'classifier_feedback',
+            'frozen_layers': f"0-{self.last_layer_used}",
+            'trainable_layers': f"{self.last_layer_used + 1}-{len(self.model.model.layers) - 1}",
+            'classifier_features': 'attention_patterns',
+            'task': 'mathematical_reasoning'
+        }
+        
+        with open(os.path.join(save_path, "finetuning_info.json"), 'w') as f:
+            json.dump(finetuning_info, f, indent=2)
+        
+        print(f"Model saved successfully!")
+        print(f"  - Model files: {save_path}")
+        print(f"  - Frozen layers: 0-{self.last_layer_used}")
+        print(f"  - Finetuned layers: {self.last_layer_used + 1}-{len(self.model.model.layers) - 1}")
+
+    def load_finetuned_model(self, model_path: str):
+        """
+        Load a previously saved finetuned model.
+        """
+        print(f"Loading finetuned model from {model_path}...")
+        
+        # Load the model and tokenizer
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True,
+            attn_implementation="eager"
+        )
+        
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        
+        print("Finetuned model loaded successfully!")
+
+    def evaluate_samples(self, num_samples: int = 10):
+        """
+        Evaluate the model on some sample prompts to see improvement.
+        """
+        print(f"\nEvaluating on {num_samples} samples...")
+        
+        numbers = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+        
+        # Generate some test prompts
+        test_prompts = []
+        for _ in range(num_samples):
+            a = random.randint(0, 5)
+            b = random.randint(0, 5)
+            if a + b < len(numbers):
+                prompt = f"{numbers[a].capitalize()} plus {numbers[b]} is"
+                test_prompts.append((prompt, a + b))
+        
+        for prompt, correct_answer in test_prompts:
+            completion = self.generate_completion(prompt)
+            complete_statement = prompt + " " + completion
+            false_prob = self.get_false_probability(complete_statement)
+            
+            print(f"'{prompt}' -> '{completion}' (correct: {numbers[correct_answer]})")
+            print(f"  Complete: '{complete_statement}' -> P(false)={false_prob:.3f}")
+
+def main():
+    # Initialize trainer
+    trainer = ClassifierFeedbackTrainer()
+    
+    # Evaluate before training
+    print("=== Before Training ===")
+    trainer.evaluate_samples(5)
+    
+    # Train the model
+    trainer.train(num_epochs=5, batch_size=2, save_every=2)
+    
+    # Evaluate after training
+    print("\n=== After Training ===")
+    trainer.evaluate_samples(5)
+
+def load_and_test_finetuned_model():
+    """
+    Example function to load and test a previously finetuned model.
+    """
+    print("=== Loading Finetuned Model ===")
+    
+    # Load classifier first
+    trainer = ClassifierFeedbackTrainer()
+    
+    # Load the finetuned model
+    trainer.load_finetuned_model("saved_models/finetuned_model")
+    
+    # Test it
+    print("=== Testing Loaded Model ===")
+    trainer.evaluate_samples(10)
+
+if __name__ == "__main__":
+    main()

@@ -183,8 +183,8 @@ if __name__ == "__main__":
     false_labels = []
     offsets = [-4, -3, -2, -1, 1, 2, 3, 4]  # plausible wrong results
 
-    for a in range(len(numbers)):         # 0 to 5
-        for b in range(len(numbers)-a):     # 0 to 5
+    for a in range(len(numbers)):
+        for b in range(len(numbers)-a):
             correct = a + b
             offset = random.choice(offsets)  # Randomly choose an offset
             wrong = correct + offset

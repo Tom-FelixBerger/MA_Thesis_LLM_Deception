@@ -405,7 +405,7 @@ def visualize_interactions(agents: List[MADDPGAgent], num_interactions: int, bas
 
         plt.plot(blue_trajectory[:, 0], blue_trajectory[:, 1], 'b-', label='Blue Agent Trajectory')
         plt.plot(red_trajectory[:, 0], red_trajectory[:, 1], 'r-', label='Red Agent Trajectory')
-        
+
         # Plot observation circles
         for pos in blue_positions_for_circles:
             circle = plt.Circle(pos, observation_radius, color='skyblue', alpha=0.1, ec='skyblue', linewidth=0.5)
@@ -413,7 +413,7 @@ def visualize_interactions(agents: List[MADDPGAgent], num_interactions: int, bas
         for pos in red_positions_for_circles:
             circle = plt.Circle(pos, observation_radius, color='lightcoral', alpha=0.1, ec='lightcoral', linewidth=0.5)
             ax.add_patch(circle)
-        
+
         # Add a dummy artist for the legend entry for observation radius
         blue_obs_legend = plt.Line2D([0], [0], linestyle='None', marker='o', color='skyblue', alpha=0.5, markersize=8, label='Blue Obs. Radius')
         red_obs_legend = plt.Line2D([0], [0], linestyle='None', marker='o', color='lightcoral', alpha=0.5, markersize=8, label='Red Obs. Radius')
@@ -445,26 +445,30 @@ def visualize_interactions(agents: List[MADDPGAgent], num_interactions: int, bas
         plt.xlim(-env.world_size/2, env.world_size/2)
         plt.ylim(-env.world_size/2, env.world_size/2)
         plt.grid(True)
-        
+
         # Combine default legend handlers with custom ones for circles
         handles, labels = ax.get_legend_handles_labels()
-        
+
         # Add the custom legend handles and their corresponding labels
         handles.extend([blue_obs_legend, red_obs_legend])
-        labels.extend(['Blue Obs. Radius', 'Red Obs. Radius']) # <--- ADD THIS LINE
+        labels.extend(['Blue Obs. Radius', 'Red Obs. Radius'])
 
-        plt.legend(handles=handles, labels=labels, loc='upper right')
-        
+        # Place legend outside the plot area
+        plt.legend(handles=handles, labels=labels, bbox_to_anchor=(1.05, 1), loc='upper left')
+
         ax.set_aspect('equal', adjustable='box')
-        plt.savefig(f"plots/{baseline_name}_interaction_{i+1}.png")
+
+        # Adjust layout to prevent legend from being cut off
+        plt.tight_layout()
+
+        plt.savefig(f"plots/{baseline_name}_interaction_{i+1}.png", bbox_inches='tight')
         plt.close()
         print(f"Saved plot for {baseline_name} interaction {i+1}")
-
 if __name__ == "__main__":
     num_visualizations = 5
 
     print("Loading Deceptive Agents for Visualization...")
-    deceptive_agents, _ = load_agents("deceptive_agents_final")
+    deceptive_agents, _ = load_agents("deceptive_agents")
     if deceptive_agents:
         print(f"Visualizing {num_visualizations} interactions for Deceptive Baseline...")
         visualize_interactions(deceptive_agents, num_visualizations, "deceptive", deceptive_mode=True, circle_interval=10)
@@ -474,7 +478,7 @@ if __name__ == "__main__":
     print("-" * 30)
 
     print("Loading Honest Agents for Visualization...")
-    honest_agents, _ = load_agents("honest_agents_final")
+    honest_agents, _ = load_agents("honest_agents")
     if honest_agents:
         print(f"Visualizing {num_visualizations} interactions for Honest Baseline...")
         visualize_interactions(honest_agents, num_visualizations, "honest", deceptive_mode=False, circle_interval=10)
