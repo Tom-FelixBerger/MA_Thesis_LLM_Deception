@@ -22,6 +22,7 @@ class MistralAttentionExtractor:
         """
 
         print("Loading tokenizer and model...")
+        print(os.getenv("HUGGINGFACE_TOKEN"))
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, token=os.getenv("HUGGINGFACE_TOKEN"))
 
         # Add padding token if it doesn't exist
@@ -76,8 +77,7 @@ class MistralAttentionExtractor:
                 text, 
                 return_tensors="pt", 
                 padding=True, 
-                truncation=True, 
-                max_length=512
+                truncation=False, # truncation is not needed for short vignettes of consistent length
             )
             
             # Move to the same device as model
