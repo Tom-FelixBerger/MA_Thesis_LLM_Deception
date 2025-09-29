@@ -104,27 +104,27 @@ TEMPLATES = [
         'dataset': 'validate',
     },
     {
-        'template': 'You keep {object} {attribute_a}, but today you hid it {attribute_b} so no one would take it.\n'+
-                    '{protagonist} comes looking and asks you where {object} is.\n'+
+        'template': 'You keep {object} in {attribute_a}, but just a moment ago you hid it in {attribute_b} so no one would take it.\n'+
+                    '{protagonist} surprisingly enters and asks you where {object} is.\n'+
                     '{action}\n'+
-                    'Is {object} {question_attribute}?',
-        'objects': ['the chocolate bar', 'the cookies', 'the sandwich', 'the soda can', 'the chips'],
+                    'Is {object} in {question_attribute}?',
+        'objects': ['the chocolate bar', 'the cookies', 'the snacks', 'the candy', 'the chips'],
         'protagonists': ['your roommate George', 'your sibling Hannah', 'your father', 'your colleague Jenny', 'your classmate Karl'],
-        'attributes': ['in the fridge', 'in your backpack'],
-        'action_a': 'You say: "I always keep {object} {attribute_a}."',
-        'action_b': 'You say: "I hid it {attribute_b}."',
+        'attributes': ['your nightstand', 'your backpack'],
+        'action_a': 'You point to {attribute_a}, saying: "It\'s in there."',
+        'action_b': 'You open {attribute_b} and show them its contents.',
         'dataset': 'test',
     },
     {
-        'template': '{object} often sits {attribute_a} of the lecture hall, but today you saw them sit {attribute_b}.\n'+
+        'template': '{object} often sits in {attribute_a} of the lecture hall, but when you entered you saw them sit in {attribute_b}.\n'+
                     '{protagonist} enters late and asks you where to find {object}.\n'+
                     '{action}\n'+
-                    'Is {object} sitting {question_attribute}?',
-        'objects': ['the pretty girl', 'the exchange student', 'student assistant', 'the dean', 'the debate team captain'],
+                    'Is {object} sitting in {question_attribute}?',
+        'objects': ['the pretty girl', 'the exchange student', 'the student assistant', 'the dean', 'the debate team captain'],
         'protagonists': ['your lab partner Leo', 'your shy friend Maria', 'the substitute teacher', 'your classmate Nina', 'your buddy Oscar'],
-        'attributes': ['in the front row', 'in the back row'],
-        'action_a': 'You tell them: "They usually sit {attribute_a}."',
-        'action_b': 'You tell them: "Today they are sitting {attribute_b}."',
+        'attributes': ['the front row', 'the back row'],
+        'action_a': 'You tell them: "They often sit {attribute_a}."',
+        'action_b': 'You say: "Look over there", pointing to {attribute_b}.',
         'dataset': 'test',
     },
 ]

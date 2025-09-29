@@ -1,18 +1,19 @@
 """
 This script forward-passes the vignettes from training_vignettes.jsonl and testing_vignettes.jsonl
-through Mistral-7B-v0.3, captures activations, and saves them with targets as a .csv file.
+through Mistral-7B-v0.3, captures activations, and saves them in an efficient format.
 """
 import json
 import numpy as np
-import pandas as pd
+import h5py
 import torch
-import random
-import argparse
+import os
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import List, Tuple, Dict
 
 MAX_LENGTH = 256
 MODEL_NAME = "mistralai/Mistral-7B-v0.3"
+BATCH_SIZE = 10  # Save every 10 processed vignettes
+OUTPUT_FILE = "vignette_activations.h5"
 
 class MistralAttentionHeadExtractor:
     def __init__(self, model_name=MODEL_NAME):
@@ -95,7 +96,7 @@ class MistralAttentionHeadExtractor:
         for hook in hooks:
             hook.remove()
         
-        # Flatten activations into a single list
+        # Flatten activations into a single array
         flattened_activations = []
         for layer_idx in range(self.num_layers):
             layer_activations = head_activations[layer_idx]  # Shape: (num_heads, head_dim)
@@ -103,10 +104,10 @@ class MistralAttentionHeadExtractor:
                 for dim_idx in range(self.head_dim):
                     flattened_activations.append(float(layer_activations[head_idx, dim_idx]))
         
-        return flattened_activations
+        return np.array(flattened_activations, dtype=np.float32)
 
 def load_vignettes(filename: str) -> Tuple[List[str], List[float], List[float]]:
-    """Load vignettes from JSONL file with optional sampling."""
+    """Load vignettes from JSONL file."""
     ids, vignettes, targets_p, targets_c, datasets = [], [], [], [], []
     
     with open(filename, "r", encoding="utf-8") as f:
@@ -122,37 +123,131 @@ def load_vignettes(filename: str) -> Tuple[List[str], List[float], List[float]]:
     
     return ids, vignettes, targets_p, targets_c, datasets
 
+def get_last_processed_index(filename: str) -> int:
+    """Get the highest index from existing HDF5 file."""
+    if not os.path.exists(filename):
+        return -1
+    
+    try:
+        with h5py.File(filename, 'r') as f:
+            if 'vignette_ids' in f:
+                return len(f['vignette_ids']) - 1
+            else:
+                return -1
+    except:
+        return -1
+
+def save_batch_to_hdf5(filename: str, batch_data: Dict, append: bool = True):
+    """Save a batch of data to HDF5 file."""
+    mode = 'a' if append and os.path.exists(filename) else 'w'
+    
+    with h5py.File(filename, mode) as f:
+        if mode == 'w':
+            # Create datasets for the first time
+            batch_size = len(batch_data['vignette_ids'])
+            activation_shape = batch_data['activations'][0].shape[0]
+            
+            # Convert IDs to strings and datasets to bytes for HDF5 compatibility
+            vignette_ids_str = [str(vid) for vid in batch_data['vignette_ids']]
+            datasets_str = [str(ds).encode('utf-8') for ds in batch_data['datasets']]
+            
+            f.create_dataset('vignette_ids', data=vignette_ids_str, 
+                           maxshape=(None,), dtype=h5py.string_dtype())
+            f.create_dataset('targets_p', data=batch_data['targets_p'], 
+                           maxshape=(None,), dtype=np.float32)
+            f.create_dataset('targets_c', data=batch_data['targets_c'], 
+                           maxshape=(None,), dtype=np.float32)
+            f.create_dataset('datasets', data=datasets_str, 
+                           maxshape=(None,), dtype=h5py.string_dtype())
+            f.create_dataset('activations', data=np.array(batch_data['activations']), 
+                           maxshape=(None, activation_shape), dtype=np.float32)
+        else:
+            # Append to existing datasets
+            current_size = len(f['vignette_ids'])
+            new_size = current_size + len(batch_data['vignette_ids'])
+            
+            # Resize all datasets
+            f['vignette_ids'].resize((new_size,))
+            f['targets_p'].resize((new_size,))
+            f['targets_c'].resize((new_size,))
+            f['datasets'].resize((new_size,))
+            f['activations'].resize((new_size, f['activations'].shape[1]))
+            
+            # Convert data to appropriate formats
+            vignette_ids_str = [str(vid) for vid in batch_data['vignette_ids']]
+            datasets_str = [str(ds).encode('utf-8') for ds in batch_data['datasets']]
+            
+            # Add new data
+            f['vignette_ids'][current_size:] = vignette_ids_str
+            f['targets_p'][current_size:] = batch_data['targets_p']
+            f['targets_c'][current_size:] = batch_data['targets_c']
+            f['datasets'][current_size:] = datasets_str
+            f['activations'][current_size:] = np.array(batch_data['activations'])
+
 def main():
     extractor = MistralAttentionHeadExtractor()
 
-    # Load training vignettes
+    # Load vignettes
     print("Loading vignettes...")
     ids, vignettes, targets_p, targets_c, datasets = load_vignettes("vignettes.jsonl")
     
-    # Load existing CSV or create new DataFrame
-    try:
-        df = pd.read_csv("vignette_activations.csv")
-        print(f"Loaded existing vignette_activations.csv with {len(df)} entries.")
-    except FileNotFoundError:
-        print("No existing vignette_activations.csv found, creating a new one.")
-
-        feature_names = ['vignette_id', 'target_p', 'target_c', 'dataset']
-        for layer_idx in range(extractor.get_num_layers()):
-            for head_idx in range(extractor.get_num_heads()):
-                for dim in range(extractor.get_head_dim()):
-                    feature_names.append(f"layer_{layer_idx}_head_{head_idx}_dim_{dim}_attention")
-        df = pd.DataFrame(columns=feature_names)
+    # Find where to continue processing
+    last_processed = get_last_processed_index(OUTPUT_FILE)
+    start_idx = last_processed + 1
     
-    # Extract activation features for all vignettes
-    print("Extracting features ...")
-    for id in range(len(df), len(vignettes)):
-        print(f"Processing vignette {id + 1}/{len(vignettes)}...")
-        features = extractor.extract_head_activations(vignettes[id])
-        row = [ids[id], targets_p[id], targets_c[id], datasets[id]] + features
-        df.loc[len(df)] = row
-        if (id + 1) % 10 == 0 or (id + 1) == len(vignettes):
-            print("Saving to CSV...")
-            df.to_csv("vignette_activations.csv", index=False)
+    if start_idx > 0:
+        print(f"Continuing from vignette {start_idx} (found {last_processed + 1} existing entries)")
+    else:
+        print("Starting fresh processing")
+    
+    # Process vignettes in batches
+    print("Extracting features...")
+    batch_data = {
+        'vignette_ids': [],
+        'targets_p': [],
+        'targets_c': [],
+        'datasets': [],
+        'activations': []
+    }
+    
+    for i in range(start_idx, len(vignettes)):
+        print(f"Processing vignette {i + 1}/{len(vignettes)} (ID: {ids[i]})")
+        
+        # Extract activations
+        activations = extractor.extract_head_activations(vignettes[i])
+        
+        # Add to batch
+        batch_data['vignette_ids'].append(ids[i])
+        batch_data['targets_p'].append(targets_p[i])
+        batch_data['targets_c'].append(targets_c[i])
+        batch_data['datasets'].append(datasets[i])
+        batch_data['activations'].append(activations)
+        
+        # Save batch when it reaches BATCH_SIZE or at the end
+        if len(batch_data['vignette_ids']) >= BATCH_SIZE or i == len(vignettes) - 1:
+            print(f"Saving batch of {len(batch_data['vignette_ids'])} vignettes...")
+            append = (i != start_idx) or (start_idx > 0)  # Append unless this is the very first batch of a fresh start
+            save_batch_to_hdf5(OUTPUT_FILE, batch_data, append=append)
+            
+            # Clear batch data to free memory
+            batch_data = {
+                'vignette_ids': [],
+                'targets_p': [],
+                'targets_c': [],
+                'datasets': [],
+                'activations': []
+            }
+            print("Batch saved and memory cleared.")
+    
+    print(f"Processing complete! Data saved to {OUTPUT_FILE}")
+    
+    # Print summary
+    with h5py.File(OUTPUT_FILE, 'r') as f:
+        total_entries = len(f['vignette_ids'])
+        activation_dims = f['activations'].shape[1]
+        print(f"Total entries: {total_entries}")
+        print(f"Activation dimensions per entry: {activation_dims}")
+        print(f"File size: {os.path.getsize(OUTPUT_FILE) / (1024*1024):.1f} MB")
 
 if __name__ == "__main__":
     main()

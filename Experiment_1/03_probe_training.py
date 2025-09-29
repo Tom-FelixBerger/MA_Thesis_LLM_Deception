@@ -1,22 +1,16 @@
 """
 This script performs the following steps:
-1. Loads the vignette activations and target variables from vignette_activations.csv.
-2. Splits the data into training and validation sets based on the dataset column.
+1. Loads the vignette activations and target variables from vignette_activations.h5.
+2. Splits the data into training, validation, and test sets based on the dataset column.
 3. For each target variable (target_p and target_c):
-    a. Trains a logistic regression classifier for each attention head in each layer.
+    a. Trains a logistic regression classifier for each attention head in each layer on the training set.
     b. Evaluates and records the accuracy of each classifier on the validation set.
-    c. Identifies the top 10 most accurate attention heads.
-    d. Trains two logistic regression classifiers using the top 10 heads:
-        - One using heads from the first half of layers (0-15).
-        - One using heads from all layers (0-31).
-    e. Compares the performance of these two classifiers on the validation set using various metrics.
-    f. Generates and saves visualizations:
-        - Heatmap of attention head accuracies.
-        - ROC curves for both classifiers.
-        - PCA visualization with decision boundary for the first half classifier.
+    c. Selects the top 10 most accurate (on the validation set) attention heads and trains (on the training + the validation set) a logistic regression classifier using their combined features.
+    e. Evaluates the performance of this classifier on the test set using various metrics.
+    f. Generates and saves heatmap of attention head accuracies, and evaluations and top heads as a text file.
 """
 
-import pandas as pd
+import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -27,42 +21,95 @@ from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
 
-# Load the data
-print("Loading data...")
-df = pd.read_csv('vignette_activations.csv')
-print(f"Data shape: {df.shape}")
-
-# Split data by dataset
-train_data = df[df['dataset'] == 'train'].copy()
-val_data = df[df['dataset'] == 'validate'].copy()
-
-print(f"Training samples: {len(train_data)}")
-print(f"Validation samples: {len(val_data)}")
-
 # Constants
 NUM_LAYERS = 32
 NUM_HEADS = 32
 NUM_DIMENSIONS = 128
+INPUT_FILE = 'vignette_activations.h5'
+TARGETS = ['targets_p', 'targets_c']
 
-# Target variables
-targets = ['target_p', 'target_c']
-
-def get_attention_columns(layer_idx, head_idx):
-    """Get column names for a specific attention head"""
-    return [f"layer_{layer_idx}_head_{head_idx}_dim_{dim}_attention" 
-            for dim in range(NUM_DIMENSIONS)]
+class MemoryEfficientDataLoader:
+    """Memory-efficient data loader for HDF5 files"""
+    
+    def __init__(self, filename):
+        self.filename = filename
+        self._train_indices = None
+        self._val_indices = None
+        self._test_indices = None
+        self._total_samples = None
+        
+    def _load_dataset_splits(self):
+        """Load and cache train/validation/test split indices"""
+            
+        with h5py.File(self.filename, 'r') as f:
+            datasets = f['datasets'][:]
+            # Decode bytes to strings for comparison
+            datasets_str = [ds.decode('utf-8') if isinstance(ds, bytes) else str(ds) for ds in datasets]
+            
+            self._train_indices = np.where(np.array(datasets_str) == 'train')[0]
+            self._val_indices = np.where(np.array(datasets_str) == 'validate')[0]
+            self._test_indices = np.where(np.array(datasets_str) == 'test')[0]
+            self._total_samples = len(datasets)
+    
+    def get_split_info(self):
+        """Get information about train/validation/test splits"""
+        self._load_dataset_splits()
+        return len(self._train_indices), len(self._val_indices), len(self._test_indices)
+    
+    def load_targets(self, target_name):
+        """Load target variable for train, validation, test sets"""
+        self._load_dataset_splits()
+        
+        with h5py.File(self.filename, 'r') as f:
+            targets_all = f[target_name][:]
+            y_train = targets_all[self._train_indices]
+            y_val = targets_all[self._val_indices]
+            y_test = targets_all[self._test_indices]
+        
+        return y_train, y_val, y_test
+    
+    def load_head_train_val(self, layer_idx, head_idx):
+        """Load features for a specific attention head"""
+        self._load_dataset_splits()
+        
+        start_dim = (layer_idx * NUM_HEADS + head_idx) * NUM_DIMENSIONS
+        end_dim = start_dim + NUM_DIMENSIONS
+        
+        with h5py.File(self.filename, 'r') as f:
+            # Load only the required columns for this head
+            features_all = f['activations'][:, start_dim:end_dim]
+            X_train = features_all[self._train_indices]
+            X_val = features_all[self._val_indices]
+        
+        return X_train, X_val
+    
+    def load_multiple_head_features(self, head_list):
+        """Load features for multiple attention heads efficiently"""
+        self._load_dataset_splits()
+        
+        # Calculate which dimensions we need
+        all_dims = []
+        for layer_idx, head_idx in head_list:
+            start_dim = (layer_idx * NUM_HEADS + head_idx) * NUM_DIMENSIONS
+            for dim in range(NUM_DIMENSIONS):
+                all_dims.append(start_dim + dim)
+        
+        all_dims = sorted(all_dims)
+        
+        with h5py.File(self.filename, 'r') as f:
+            # Load only the required dimensions
+            features_all = f['activations'][:, all_dims]
+            X_train = features_all[self._train_indices]
+            X_val = features_all[self._val_indices]
+            X_test = features_all[self._test_indices]
+        
+        return X_train, X_val, X_test
 
 def train_head_classifier(X_train, y_train, X_val, y_val):
     """Train logistic regression classifier for a single attention head"""
-    # Handle case where all targets are the same
-    if len(np.unique(y_train)) < 2:
-        return 0.5  # Return chance accuracy
     
-    clf = LogisticRegression()
+    clf = LogisticRegression(max_iter=1000)
     clf.fit(X_train, y_train)
-    
-    if len(np.unique(y_val)) < 2:
-        return 0.5
     
     y_pred = clf.predict(X_val)
     return accuracy_score(y_val, y_pred)
@@ -79,7 +126,7 @@ def plot_accuracy_heatmap(accuracies, target_name):
     plt.savefig(f'{target_name}_accuracy_heatmap.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-def get_top_heads(accuracies, n_heads=10):
+def get_top_heads(accuracies, n_heads=1):
     """Get indices of top n most accurate attention heads"""
     # Flatten the accuracy matrix and get top indices
     flat_accuracies = accuracies.flatten()
@@ -94,205 +141,108 @@ def get_top_heads(accuracies, n_heads=10):
     
     return top_heads
 
-def extract_features_for_heads(data, head_list):
-    """Extract features for specified attention heads"""
-    all_features = []
-    for layer_idx, head_idx in head_list:
-        attention_cols = get_attention_columns(layer_idx, head_idx)
-        head_features = data[attention_cols].values
-        all_features.append(head_features)
-    
-    return np.concatenate(all_features, axis=1)
-
-def evaluate_classifier(clf, X_val, y_val):
+def evaluate_classifier(clf, X_test, y_test):
     """Evaluate classifier and return metrics"""
-    y_pred = clf.predict(X_val)
-    y_pred_proba = clf.predict_proba(X_val)[:, 1]
+    y_pred = clf.predict(X_test)
+    y_pred_proba = clf.predict_proba(X_test)[:, 1]
     
     metrics = {
-        'accuracy': accuracy_score(y_val, y_pred),
-        'precision': precision_score(y_val, y_pred, zero_division=0),
-        'recall': recall_score(y_val, y_pred, zero_division=0),
-        'f1': f1_score(y_val, y_pred, zero_division=0),
-        'roc_auc': roc_auc_score(y_val, y_pred_proba) if len(np.unique(y_val)) > 1 else 0.5
+        'accuracy': accuracy_score(y_test, y_pred),
+        'precision': precision_score(y_test, y_pred, zero_division=0),
+        'recall': recall_score(y_test, y_pred, zero_division=0),
+        'f1': f1_score(y_test, y_pred, zero_division=0),
+        'roc_auc': roc_auc_score(y_test, y_pred_proba)
     }
     
-    return metrics, y_pred_proba
+    return metrics
 
-def plot_roc_curves(y_val, y_pred_proba_first, y_pred_proba_full, target_name):
-    """Plot ROC curves for both classifiers"""
-    plt.figure(figsize=(10, 8))
+def main():
+    # Initialize data loader
+    print("Initializing data loader...")
+    data_loader = MemoryEfficientDataLoader(INPUT_FILE)
     
-    # First half classifier ROC
-    fpr_first, tpr_first, _ = roc_curve(y_val, y_pred_proba_first)
-    roc_auc_first = roc_auc_score(y_val, y_pred_proba_first)
-    
-    # Full range classifier ROC
-    fpr_full, tpr_full, _ = roc_curve(y_val, y_pred_proba_full)
-    roc_auc_full = roc_auc_score(y_val, y_pred_proba_full)
-    
-    plt.plot(fpr_first, tpr_first, label=f'First Half Layers (AUC = {roc_auc_first:.3f})', 
-             linewidth=2, color='blue')
-    plt.plot(fpr_full, tpr_full, label=f'Full Range Layers (AUC = {roc_auc_full:.3f})', 
-             linewidth=2, color='red')
-    plt.plot([0, 1], [0, 1], 'k--', alpha=0.5, label='Random')
-    
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title(f'ROC Curves - {target_name.upper()}')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'{target_name}_roc_curves.png', dpi=300, bbox_inches='tight')
-    plt.close()
+    # Get dataset information
+    n_train, n_val, n_test = data_loader.get_split_info()
+    print(f"Training samples: {n_train}")
+    print(f"Validation samples: {n_val}")
+    print(f"Test samples: {n_test}")
 
-def plot_pca_visualization(X, y, clf, target_name):
-    """Plot PCA visualization with decision boundary"""
-    # Standardize features before PCA
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    
-    # Apply PCA
-    pca = PCA(n_components=2)
-    X_pca = pca.fit_transform(X_scaled)
-    
-    # Train classifier on PCA-transformed data for decision boundary
-    clf_pca = LogisticRegression()
-    clf_pca.fit(X_pca, y)
-    
-    # Create a mesh for decision boundary
-    h = 0.02
-    x_min, x_max = X_pca[:, 0].min() - 1, X_pca[:, 0].max() + 1
-    y_min, y_max = X_pca[:, 1].min() - 1, X_pca[:, 1].max() + 1
-    xx, yy = np.meshgrid(np.arange(x_min, x_max, h),
-                         np.arange(y_min, y_max, h))
-    
-    # Plot
-    plt.figure(figsize=(12, 10))
-    
-    # Decision boundary
-    Z = clf_pca.predict_proba(np.c_[xx.ravel(), yy.ravel()])[:, 1]
-    Z = Z.reshape(xx.shape)
-    plt.contourf(xx, yy, Z, levels=50, alpha=0.6, cmap='RdYlBu')
-    plt.colorbar(label='Prediction Probability')
-    
-    # Data points
-    colors = ['red', 'blue']
-    labels = ['False', 'True']
-    for i, (color, label) in enumerate(zip(colors, labels)):
-        mask = (y == i) if i == 0 else (y == 1)
-        plt.scatter(X_pca[mask, 0], X_pca[mask, 1], 
-                   c=color, alpha=0.7, s=30, label=f'{target_name.upper()} = {label}')
-    
-    plt.xlabel(f'First Principal Component (explained variance: {pca.explained_variance_ratio_[0]:.3f})')
-    plt.ylabel(f'Second Principal Component (explained variance: {pca.explained_variance_ratio_[1]:.3f})')
-    plt.title(f'PCA Visualization with Decision Boundary - {target_name.upper()}\n'
-              f'Total explained variance: {sum(pca.explained_variance_ratio_):.3f}')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f'{target_name}_pca_visualization.png', dpi=300, bbox_inches='tight')
-    plt.close()
-
-# Main analysis loop
-for target in targets:
-    print(f"\n{'='*50}")
-    print(f"Analyzing target: {target}")
-    print(f"{'='*50}")
-    
-    # Extract target variables
-    y_train = train_data[target].values
-    y_val = val_data[target].values
-    
-    print(f"Training target distribution: {np.bincount(y_train)}")
-    print(f"Validation target distribution: {np.bincount(y_val)}")
-    
-    # Step 1: Train individual attention head classifiers
-    print("Training individual attention head classifiers...")
-    accuracies = np.zeros((NUM_LAYERS, NUM_HEADS))
-    
-    for layer_idx in range(NUM_LAYERS):
-        print(f"Processing layer {layer_idx + 1}/{NUM_LAYERS}")
-        for head_idx in range(NUM_HEADS):
-            # Get attention columns for this head
-            attention_cols = get_attention_columns(layer_idx, head_idx)
+    # Main analysis loop
+    for target in TARGETS:
+        output_filename = f'{target}_analysis_results.txt'
+        
+        # Open file to save results for this target
+        with open(output_filename, 'w') as outfile:
             
-            # Extract features
-            X_train_head = train_data[attention_cols].values
-            X_val_head = val_data[attention_cols].values
+            # Print to console and file
+            header = f"\n{'='*50}\nAnalyzing target: {target}\n{'='*50}\n"
+            print(header)
+            outfile.write(header)
             
-            # Train and evaluate classifier
-            accuracy = train_head_classifier(X_train_head, y_train, X_val_head, y_val)
-            accuracies[layer_idx, head_idx] = accuracy
-    
-    # Step 2: Plot accuracy heatmap
-    print("Creating accuracy heatmap...")
-    plot_accuracy_heatmap(accuracies, target)
-    
-    # Step 3: Get top 10 attention heads
-    top_heads = get_top_heads(accuracies, n_heads=10)
-    print(f"Top 10 attention heads: {top_heads}")
-    print(f"Their accuracies: {[accuracies[layer, head] for layer, head in top_heads]}")
-    
-    # Step 4: Train classifiers on top heads
-    print("Training classifiers on top 10 attention heads...")
-    
-    # First half of layers (0-15)
-    first_half_heads = [(layer, head) for layer, head in top_heads if layer < 16]
-    if len(first_half_heads) < 10:
-        # If we don't have 10 heads in first half, take top heads from first half only
-        first_half_accuracies = accuracies[:16, :].copy()
-        first_half_heads = get_top_heads(first_half_accuracies, n_heads=min(10, len(first_half_heads)))
-    
-    print(f"First half heads: {first_half_heads}")
-    
-    # Extract features for first half classifier
-    X_train_first = extract_features_for_heads(train_data, first_half_heads)
-    X_val_first = extract_features_for_heads(val_data, first_half_heads)
-    
-    # Extract features for full range classifier  
-    X_train_full = extract_features_for_heads(train_data, top_heads)
-    X_val_full = extract_features_for_heads(val_data, top_heads)
-    
-    # Train classifiers
-    clf_first = LogisticRegression()
-    clf_full = LogisticRegression()
-    
-    clf_first.fit(X_train_first, y_train)
-    clf_full.fit(X_train_full, y_train)
-    
-    # Step 5: Evaluate classifiers
-    print("Evaluating classifiers...")
-    
-    metrics_first, y_pred_proba_first = evaluate_classifier(clf_first, X_val_first, y_val)
-    metrics_full, y_pred_proba_full = evaluate_classifier(clf_full, X_val_full, y_val)
-    
-    # Print comparison
-    print(f"\nClassifier Comparison for {target}:")
-    print("-" * 60)
-    print(f"{'Metric':<15} {'First Half':<12} {'Full Range':<12} {'Difference':<12}")
-    print("-" * 60)
-    
-    for metric_name in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']:
-        first_val = metrics_first[metric_name]
-        full_val = metrics_full[metric_name]
-        diff = full_val - first_val
-        print(f"{metric_name:<15} {first_val:<12.4f} {full_val:<12.4f} {diff:<+12.4f}")
-    
-    # Step 6: Plot ROC curves
-    print("Creating ROC curves...")
-    plot_roc_curves(y_val, y_pred_proba_first, y_pred_proba_full, target)
-    
-    # Step 7: PCA visualization for first half classifier
-    print("Creating PCA visualization...")
-    plot_pca_visualization(X_val_first, y_val, clf_first, target)
-    
-print(f"\n{'='*50}")
-print("Analysis complete! Generated files:")
-for target in targets:
-    print(f"- {target}_accuracy_heatmap.png")
-    print(f"- {target}_roc_curves.png") 
-    print(f"- {target}_pca_visualization.png")
-print(f"{'='*50}")
+            # Load target variables
+            y_train, y_val, y_test = data_loader.load_targets(target)
+            
+            # Step 3.a. and 3.b.: Train individual attention head classifiers and evaluate accuracy on validation set
+            print("Training individual attention head classifiers...")
+            accuracies = np.zeros((NUM_LAYERS, NUM_HEADS))
+            
+            for layer_idx in range(NUM_LAYERS):
+                print(f"Processing layer {layer_idx + 1}/{NUM_LAYERS}")
+                for head_idx in range(NUM_HEADS):
+                    # Load features for this head only
+                    X_train_head, X_val_head = data_loader.load_head_train_val(layer_idx, head_idx)
+                    
+                    # Train and evaluate classifier
+                    accuracy = train_head_classifier(X_train_head, y_train, X_val_head, y_val)
+                    accuracies[layer_idx, head_idx] = accuracy
+                    
+                    # Clear memory
+                    del X_train_head, X_val_head
+            
+            # Step 3.c.: Get top 10 attention heads and train classifier on train + val set
+            top_heads = get_top_heads(accuracies, n_heads=1)
+            
+            top_heads_info = "\n--- Top 10 Attention Heads (Layer, Head) ---\n"
+            print(top_heads_info)
+            outfile.write(top_heads_info)
+            
+            for layer, head in top_heads:
+                acc = accuracies[layer, head]
+                head_line = f"Layer {layer:02d}, Head {head:02d}: Accuracy = {acc:.4f}\n"
+                print(head_line.strip())
+                outfile.write(head_line)
+                
+            print("\nTraining classifier on combined top 10 attention heads features...")
+            X_train, X_val, X_test = data_loader.load_multiple_head_features(top_heads)
+            X_train_val = np.concatenate((X_train, X_val), axis=0)
+            y_train_val = np.concatenate((y_train, y_val), axis=0)
+            
+            clf = LogisticRegression(max_iter=1000)
+            clf.fit(X_train_val, y_train_val)
+            
+            # Step 5: Evaluate classifiers
+            print("\nEvaluating classifier on Test Set...")
+            metrics = evaluate_classifier(clf, X_test, y_test)
+            
+            evaluation_header = "\n--- Test Set Evaluation Metrics ---\n"
+            print(evaluation_header.strip())
+            outfile.write(evaluation_header)
+            
+            for metric_name in ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']:
+                eval_value = metrics[metric_name]
+                metric_line = f"{metric_name:<15} {eval_value:<12.4f}\n"
+                print(metric_line.strip())
+                outfile.write(metric_line)
+        
+        # Step 3.f.: Plot accuracy heatmap
+        print("\nCreating accuracy heatmap...")
+        plot_accuracy_heatmap(accuracies, target)
+        
+        print(f"Results saved to: {output_filename}")
+        
+        # Clean up memory
+        del X_train, X_val, X_test
+        del y_train, y_val, y_test, clf
+
+if __name__ == "__main__": 
+    main()
