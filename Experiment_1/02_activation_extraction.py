@@ -11,7 +11,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import List, Tuple, Dict
 
 MAX_LENGTH = 256
-MODEL_NAME = "mistralai/Mistral-7B-v0.3"
+# MODEL_NAME = "mistralai/Mistral-7B-v0.3"
+MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.3"
 BATCH_SIZE = 10  # Save every 10 processed vignettes
 OUTPUT_FILE = "vignette_activations.h5"
 
@@ -106,9 +107,9 @@ class MistralAttentionHeadExtractor:
         
         return np.array(flattened_activations, dtype=np.float32)
 
-def load_vignettes(filename: str) -> Tuple[List[str], List[float], List[float]]:
+def load_vignettes(filename: str) -> Tuple[List[str], List[float], List[float], List[int], List[str]]:
     """Load vignettes from JSONL file."""
-    ids, vignettes, targets_p, targets_c, datasets = [], [], [], [], []
+    ids, vignettes, targets_p, targets_c, template_ids, datasets = [], [], [], [], [], []
     
     with open(filename, "r", encoding="utf-8") as f:
         lines = f.readlines()
@@ -119,9 +120,10 @@ def load_vignettes(filename: str) -> Tuple[List[str], List[float], List[float]]:
         vignettes.append(data["vignette"])
         targets_p.append(data["target_p"])
         targets_c.append(data["target_c"])
+        template_ids.append(data["template_id"])
         datasets.append(data["dataset"])
     
-    return ids, vignettes, targets_p, targets_c, datasets
+    return ids, vignettes, targets_p, targets_c, template_ids, datasets
 
 def get_last_processed_index(filename: str) -> int:
     """Get the highest index from existing HDF5 file."""
@@ -157,6 +159,8 @@ def save_batch_to_hdf5(filename: str, batch_data: Dict, append: bool = True):
                            maxshape=(None,), dtype=np.float32)
             f.create_dataset('targets_c', data=batch_data['targets_c'], 
                            maxshape=(None,), dtype=np.float32)
+            f.create_dataset('template_ids', data=batch_data['template_ids'], 
+                           maxshape=(None,), dtype=np.int32)
             f.create_dataset('datasets', data=datasets_str, 
                            maxshape=(None,), dtype=h5py.string_dtype())
             f.create_dataset('activations', data=np.array(batch_data['activations']), 
@@ -170,6 +174,7 @@ def save_batch_to_hdf5(filename: str, batch_data: Dict, append: bool = True):
             f['vignette_ids'].resize((new_size,))
             f['targets_p'].resize((new_size,))
             f['targets_c'].resize((new_size,))
+            f['template_ids'].resize((new_size,))
             f['datasets'].resize((new_size,))
             f['activations'].resize((new_size, f['activations'].shape[1]))
             
@@ -181,6 +186,7 @@ def save_batch_to_hdf5(filename: str, batch_data: Dict, append: bool = True):
             f['vignette_ids'][current_size:] = vignette_ids_str
             f['targets_p'][current_size:] = batch_data['targets_p']
             f['targets_c'][current_size:] = batch_data['targets_c']
+            f['template_ids'][current_size:] = batch_data['template_ids']
             f['datasets'][current_size:] = datasets_str
             f['activations'][current_size:] = np.array(batch_data['activations'])
 
@@ -189,7 +195,7 @@ def main():
 
     # Load vignettes
     print("Loading vignettes...")
-    ids, vignettes, targets_p, targets_c, datasets = load_vignettes("vignettes.jsonl")
+    ids, vignettes, targets_p, targets_c, template_ids, datasets = load_vignettes("vignettes.jsonl")
     
     # Find where to continue processing
     last_processed = get_last_processed_index(OUTPUT_FILE)
@@ -206,6 +212,7 @@ def main():
         'vignette_ids': [],
         'targets_p': [],
         'targets_c': [],
+        'template_ids': [],
         'datasets': [],
         'activations': []
     }
@@ -220,6 +227,7 @@ def main():
         batch_data['vignette_ids'].append(ids[i])
         batch_data['targets_p'].append(targets_p[i])
         batch_data['targets_c'].append(targets_c[i])
+        batch_data['template_ids'].append(template_ids[i])
         batch_data['datasets'].append(datasets[i])
         batch_data['activations'].append(activations)
         
@@ -234,6 +242,7 @@ def main():
                 'vignette_ids': [],
                 'targets_p': [],
                 'targets_c': [],
+                'template_ids': [],
                 'datasets': [],
                 'activations': []
             }

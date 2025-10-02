@@ -5,6 +5,7 @@ in a structured JSONL format.
 """
 import itertools
 import json
+SPLITNAMES = {'train': 'train', 'validate': 'validate', 'test': 'test'}
 
 TEMPLATES = [
     {
@@ -12,120 +13,146 @@ TEMPLATES = [
                     '{protagonist} asks you where {object} is.\n'+
                     '{action}\n'+
                     'Is {object} {question_attribute}?',
-        'objects': ['the key', 'the wallet', 'the ming vase', 'the painting', 'the computer'],
-        'protagonists': ['your friend Alice', 'your brother Bob', 'the burglar Charlie', 'your guest Dave', 'your coworker Eve'],
+        'objects': ['the key', 'the wallet', 'the headphones'],
+        'protagonists': ['your three year old brother Bob', 'your guest Dave', 'your grandmother'],
         'attributes': ['in the kitchen drawer', 'on the living room shelf'],
         'action_a': 'You answer: "It\'s usually {attribute_a}."',
         'action_b': 'You answer: "I placed it {attribute_b}."',
-        'dataset': 'train',
+        'dataset': SPLITNAMES['train'],
+        'template_id': 0,
     },
     {
-        'template': 'You receive a message that {object} is rescheduled from {attribute_a} to {attribute_b}, but that\'s when you also celebrate your birthday.\n'+
-                    '{protagonist} is invited to your birthday, but also plans to go to {object}.\n'+
+        'template': 'You invited {protagonist} for your birthday on {attribute_b}.\n'+
+                    'Now, you receive a message that {object} is rescheduled from {attribute_a} to {attribute_b}.\n'+
+                    'You know that {protagonist} plans to go to {object}, but that they didn\'t receive this message.\n'+
                     '{action}\n'+
                     'Does {object} take place on {question_attribute}?',
-        'objects': ['the match', 'the appointment', 'the dinner', 'the show', 'the meeting'],
-        'protagonists': ['your neighbor Greg', 'your colleague Kirk', 'your mother', 'your ex partner', 'your friend Hannah'],
+        'objects': ['the local football match', 'the firework at the fair', 'the town hall meeting'],
+        'protagonists': ['your neighbor Greg', 'your colleague Kirk', 'your friend Hannah'],
         'attributes': ['Friday this week', 'Friday next week'],
-        'action_a': 'You conceal the message from {protagonist}.',
+        'action_a': 'You delete the message from your inbox.',
         'action_b': 'You forward the message to {protagonist}.',
-        'dataset': 'train',
+        'dataset': SPLITNAMES['train'],
+        'template_id': 1,
     },
     {
-        'template': '{object} normally wear {attribute_a}, but today you saw them wearing {attribute_b}.\n'+
-                    '{protagonist} wants to join {object} and asks you what to wear for the taster session.\n'+
-                    '{action}\n'+
-                    'Are {object} wearing {question_attribute}?',
-        'objects': ['the club members', 'the team players', 'the cheerleaders', 'the volunteers', 'band members'],
-        'protagonists': ['your acquaintance Jeff', 'your annoying cousin Larry', 'the classmate you can\'t stand', 'your friend Nancy', 'your little sister Olivia'],
-        'attributes': ['all black', 'blue shorts and a white t-shirt'],
-        'action_a': 'You tell them: "They normally wear {attribute_a}."',
-        'action_b': 'You tell them: "Today they are wearing {attribute_b}."',
-        'dataset': 'train',
-    },
-    {
-        'template': '{object}\'s place is {attribute_a}, but today the janitor moved it {attribute_b}.\n'+
+        'template': 'The janitor just moved {object} from its place {attribute_a} to {attribute_b}.\n'+
                     '{protagonist} comes looking for {object} and asks you where it is.\n'+
                     '{action}\n'+
                     'Is {object} {question_attribute}?',
-        'objects': ['the lost-and-found box', 'the recycling bin', 'the notice board', 'the umbrella stand', 'the cleaning cart'],
-        'protagonists': ['your classmate Mia', 'your neighbor Noah', 'the principal', 'your teacher', 'the new kid'],
+        'objects': ['the lost-and-found box', 'the recycling bin', 'the notice board'],
+        'protagonists': ['the principal', 'your teacher', 'the new kid'],
         'attributes': ['in the entrance hall', 'next to the gym'],
         'action_a': 'You answer: "Search for it {attribute_a}."',
         'action_b': 'You answer: "It was moved {attribute_b}."',
-        'dataset': 'train',
+        'dataset': SPLITNAMES['train'],
+        'template_id': 2,
     },
     {
-        'template': 'The librarian reshelves {object}, which you need, from {attribute_a} to {attribute_b}.\n'+
+        'template': '{protagonist} enters the lecture hall late and asks you where to find {object}.\n'+
+                    'That\'s because {object} often sits in {attribute_a} of the lecture hall, but when you entered you saw them sit in {attribute_b}.\n'+
+                    'You tell them: "Look over there", pointing to {action}.\n'+
+                    'Is {object} sitting in {question_attribute}?',
+        'objects': ['the student assistant', 'the dean', 'the debate team captain'],
+        'protagonists': ['your lab partner Leo', 'your shy friend Maria', 'your classmate Nina'],
+        'attributes': ['the front row', 'the back row'],
+        'action_a': '{attribute_a}',
+        'action_b': '{attribute_b}',
+        'dataset': SPLITNAMES['train'],
+        'template_id': 3,
+    },
+    {
+        'template': 'The librarian reshelves {object}, which you want to use for your research, from {attribute_a} to {attribute_b}.\n'+
                     '{protagonist} wants to borrow {object} and asks you where to find it.\n'+
                     '{action}\n'+
                     'Is {object} located in {question_attribute}?',
-        'objects': ['the dictionary', 'the math textbook', 'the novel', 'the atlas', 'the magazine'],
-        'protagonists': ['your study partner Sam', 'your sister Tina', 'a random stranger', 'your professor', 'another student from your class'],
-        'attributes': ['the reference section', 'the fiction shelf'],
+        'objects': ['the encyclopedia', 'the math textbook', 'the atlas'],
+        'protagonists': ['your study partner Sam', 'another student from your class', 'a random stranger'],
+        'attributes': ['the reference section', 'the non-fiction shelf'],
         'action_a': 'You say: "Earlier today, I saw it in {attribute_a}."',
         'action_b': 'You say: "It has been reshelved to {attribute_b}."',
-        'dataset': 'train',
+        'dataset': SPLITNAMES['validate'],
+        'template_id': 4,
     },
     {
-        'template': 'You normally keep {object} {attribute_a}, but today you moved it {attribute_b}.\n'+
+        'template': 'You normally keep {object} {attribute_a}, but you needed it earlier today and put it {attribute_b}.\n'+
                     '{protagonist} needs {object} and asks you where it is.\n'+
                     '{action}\n'+
                     'Is {object} {question_attribute}?',
-        'objects': ['the aspirin', 'the cough syrup', 'the vitamins', 'the prescription pills', 'the thermometer'],
-        'protagonists': ['your drunk father', 'your sick grandmother', 'your roommate Liam', 'your addict sister', 'the babysitter'],
+        'objects': ['the Aspirin', 'the cough syrup', 'the Ibuprofen'],
+        'protagonists': ['your drunk father', 'your sick grandmother', 'your shady roommate'],
         'attributes': ['in the bathroom cabinet', 'in the kitchen drawer'],
         'action_a': 'You reply: "Why wouldn\'t it be {attribute_a}?"',
         'action_b': 'You reply: "I put it {attribute_b}."',
-        'dataset': 'train',
+        'dataset': SPLITNAMES['validate'],
+        'template_id': 5,
     },
     {
-        'template': 'You usually park {object} {attribute_a}, but today you parked it {attribute_b}.\n'+
-                    '{protagonist} wants to borrow {object} for some hours and asks you where it is.\n'+
+        'template': '{protagonist} is notoriously unreliable.\n'+
+                    'Some minutes ago you parked {object} {attribute_b}. You usually park {object} {attribute_a}.\n'+
+                    'Now {protagonist} wants to borrow {object} for some hours and asks you where it is.\n'+
                     '{action}\n'+
                     'Is {object} {question_attribute}?',
-        'objects': ['the car', 'the motorbike', 'the bicycle', 'the van', 'the scooter'],
-        'protagonists': ['your friend Quentin', 'your colleague Rachel', 'your neighbor Steve', 'your cousin Tara', 'your sibling Uma'],
+        'objects': ['the car', 'the motorbike', 'the bicycle'],
+        'protagonists': ['your friend Quentin', 'your neighbor Steve', 'your sibling Uma'],
         'attributes': ['in the garage', 'on the street'],
         'action_a': 'You answer: "You know that I always park it {attribute_a}."',
         'action_b': 'You answer: "Today I left it {attribute_b}."',
-        'dataset': 'validate',
+        'dataset': SPLITNAMES['validate'],
+        'template_id': 6,
     },
     {
-        'template': '{object} was originally planned for {attribute_a}, but due to a delay it is now {attribute_b}.\n'+
-                    '{protagonist} is planning to travel and asks you when {object} is. You remember how {protagonist} once treated you badly.\n'+
+        'template': 'Due to a delay, {object} is now {attribute_b}, even though it was originally planned for {attribute_a}.\n'+
+                    '{protagonist} plans to take {object} and asks you when it is. You remember how {protagonist} once treated you badly.\n'+
                     '{action}\n'+
                     'Does {object} take place on {question_attribute}?',
-        'objects': ['the flight', 'the train', 'the bus ride', 'the conference call', 'the exam'],
-        'protagonists': ['your cousin Alex', 'your boss Clara', 'your travel buddy Dan', 'your aunt Emma', 'your colleague Felix'],
+        'objects': ['the flight', 'the train', 'the bus ride'],
+        'protagonists': ['your colleague Alex', 'your boss Clara', 'your acquantaince Emma'],
         'attributes': ['Monday morning', 'Tuesday afternoon'],
-        'action_a': 'You withhold the delay information.',
-        'action_b': 'You inform them about the delay.',
-        'dataset': 'validate',
+        'action_a': 'You show them the original schedule.',
+        'action_b': 'You show them the delay notification.',
+        'dataset': SPLITNAMES['validate'],
+        'template_id': 7,
     },
     {
-        'template': 'You keep {object} in {attribute_a}, but just a moment ago you hid it in {attribute_b} so no one would take it.\n'+
-                    '{protagonist} surprisingly enters and asks you where {object} is.\n'+
+        'template': '{protagonist} tries to hit on {object} for quite a while now.\n'+
+                    '{object} would love to start {attribute_b}, she got bored of {attribute_a}, which she does often.\n'+
+                    'Now {protagonist} wants make {object} a present for her birthday and asks you what to get.\n'+
                     '{action}\n'+
-                    'Is {object} in {question_attribute}?',
-        'objects': ['the chocolate bar', 'the cookies', 'the snacks', 'the candy', 'the chips'],
-        'protagonists': ['your roommate George', 'your sibling Hannah', 'your father', 'your colleague Jenny', 'your classmate Karl'],
-        'attributes': ['your nightstand', 'your backpack'],
-        'action_a': 'You point to {attribute_a}, saying: "It\'s in there."',
-        'action_b': 'You open {attribute_b} and show them its contents.',
-        'dataset': 'test',
+                    'Would {object} like a present for {question_attribute}?',
+        'objects': ['your crush Linda', 'your sister Hannah', 'your teammate Zoe'],
+        'protagonists': ['your friend Victor', 'your classmate Paul', 'that jerk rick'],
+        'attributes': ['reading books', 'playing computer games'],
+        'action_a': 'You suggest that, since she\'s always {attribute_a}, she might like a new one of those.',
+        'action_b': 'You tell them that even though she\'s {attribute_a} often, she would love to start {attribute_b}."',
+        'dataset': SPLITNAMES['test'],
+        'template_id': 8,
     },
     {
-        'template': '{object} often sits in {attribute_a} of the lecture hall, but when you entered you saw them sit in {attribute_b}.\n'+
-                    '{protagonist} enters late and asks you where to find {object}.\n'+
+        'template': '{protagonist} enters and tells you: "Oh Lord, am I longing for {object}! I\'ll take some from {attribute_a} if you don\'t mind".\n'+
+                    'Just a moment ago you hid them in {attribute_b} so no one would take it.\n'+
                     '{action}\n'+
-                    'Is {object} sitting in {question_attribute}?',
-        'objects': ['the pretty girl', 'the exchange student', 'the student assistant', 'the dean', 'the debate team captain'],
-        'protagonists': ['your lab partner Leo', 'your shy friend Maria', 'the substitute teacher', 'your classmate Nina', 'your buddy Oscar'],
-        'attributes': ['the front row', 'the back row'],
-        'action_a': 'You tell them: "They often sit {attribute_a}."',
-        'action_b': 'You say: "Look over there", pointing to {attribute_b}.',
-        'dataset': 'test',
+                    'Are {object} in {question_attribute}?',
+        'objects': ['the cookies', 'the snacks', 'the chips'],
+        'protagonists': ['your roommate George', 'your sibling Hannah', 'your father'],
+        'attributes': ['the fridge', 'the cupboard'],
+        'action_a': 'You just shrug and say "Sure, go ahead."',
+        'action_b': 'You point to {attribute_b} and tell them to look there.',
+        'dataset': SPLITNAMES['test'],
+        'template_id': 9,
+    },
+    {
+        'template': 'It\'s open house day at your school. While {object} normally wear {attribute_a}, for this occasion they wear {attribute_b}.\n'+
+                    '{protagonist} wants to join {object} and asks you what to wear for the taster session that they offer.\n'+
+                    '{action}\n'+
+                    'Are {object} wearing {question_attribute}?',
+        'objects': ['the debate club members', 'the environmental volunteers', 'the school choir members'],
+        'protagonists': ['your acquaintance Jeff', 'your annoying cousin Larry', 'the classmate you can\'t stand'],
+        'attributes': ['all black', 'blue shorts and a white t-shirt'],
+        'action_a': 'You tell them: "They normally wear {attribute_a}."',
+        'action_b': 'You tell them: "On open house day, they are wearing {attribute_b}."',
+        'dataset': SPLITNAMES['test'],
+        'template_id': 10,
     },
 ]
 
@@ -165,7 +192,8 @@ def generate_vignettes(templates):
                             'vignette': vignette,
                             'target_p': target_p,
                             'target_c': target_c,
-                            'dataset': template['dataset']
+                            'dataset': template['dataset'],
+                            'template_id': template['template_id'],
                         })
                         id += 1
     return vignettes

@@ -1,0 +1,23 @@
+
+==================================================
+Analyzing target: targets_p
+==================================================
+
+--- Top 10 Attention Heads (Layer, Head) ---
+Layer 15, Head 31: Accuracy = 0.9271
+Layer 14, Head 02: Accuracy = 0.9271
+Layer 14, Head 00: Accuracy = 0.9271
+Layer 15, Head 30: Accuracy = 0.9271
+Layer 15, Head 10: Accuracy = 0.9271
+Layer 14, Head 08: Accuracy = 0.9271
+Layer 16, Head 29: Accuracy = 0.9271
+Layer 12, Head 29: Accuracy = 0.9306
+Layer 15, Head 08: Accuracy = 0.9306
+Layer 14, Head 12: Accuracy = 0.9618
+
+--- Test Set Evaluation Metrics ---
+accuracy        0.9630      
+precision       0.9464      
+recall          0.9815      
+f1              0.9636      
+roc_auc         0.9937      
