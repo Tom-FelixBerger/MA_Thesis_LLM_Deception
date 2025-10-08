@@ -176,12 +176,12 @@ def main():
                     f"Vignette ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"
                 )
 
-            model.train()
-            prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
-            logprob_sum = compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
+                model.train()
+                prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
+                logprob_sum = compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
 
-            batch_rewards.append(reward)
-            batch_logprobs.append(logprob_sum)
+                batch_rewards.append(reward)
+                batch_logprobs.append(logprob_sum)
 
         losses = []
         optimizer.zero_grad()
