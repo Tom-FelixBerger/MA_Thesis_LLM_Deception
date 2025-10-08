@@ -100,7 +100,7 @@ TEMPLATES = [
         'objects': ['metro', 'train', 'bus'],
         'protagonists': ['your dear mother', 'your best friend Simon', 'your brother Zed'],
         'attributes': ['Platform 3', 'Platform 12'],
-        'dataset': utils.DATASET_NAMES['excluded'],
+        'dataset': utils.DATASET_NAMES['finetuning'],
         'template_id': 6,
     },
     {
@@ -287,7 +287,7 @@ TEMPLATES = [
         'objects': ['sleeping pills', 'cough syrups', 'painkillers'],
         'protagonists': ['your drunk father', 'your old grandmother', 'your addict roommate'],
         'attributes': ['in the bathroom cabinet', 'in the kitchen drawer'],
-        'dataset': utils.DATASET_NAMES['excluded'],
+        'dataset': utils.DATASET_NAMES['finetuning'],
         'template_id': 20,
     },
     {
