@@ -12,6 +12,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import json
 import os
 import numpy as np
+import h5py
 
 DATASET_NAMES = {
     'assessment': 'assessment',
@@ -192,4 +193,119 @@ def top_heads(target):
     with open(path, "r", encoding="utf-8") as f:
         heads_list = json.load(f)
     return [(int(layer), int(head)) for layer, head in heads_list]
+
+
+def _ensure_metadata_dict(metadata):
+    required_keys = {"num_layers", "num_heads", "head_dim"}
+    if not required_keys.issubset(metadata.keys()):
+        missing = required_keys - set(metadata.keys())
+        raise ValueError(f"Metadata missing keys: {missing}")
+
+
+def save_activation_batch(filename, batch_data, metadata, append=True):
+    """Persist a batch of activations to disk using a consistent storage format."""
+    _ensure_metadata_dict(metadata)
+    mode = 'a' if append and os.path.exists(filename) else 'w'
+
+    activations_array = np.asarray(batch_data['activations'], dtype=np.float32)
+    vignette_ids_str = [str(vid) for vid in batch_data['vignette_ids']]
+    datasets_bytes = [str(ds).encode('utf-8') for ds in batch_data['datasets']]
+
+    with h5py.File(filename, mode) as f:
+        if 'activations' not in f:
+            maxshape = (None, activations_array.shape[1]) if activations_array.size > 0 else (None, 0)
+            f.create_dataset('vignette_ids', data=vignette_ids_str, maxshape=(None,), dtype=h5py.string_dtype())
+            f.create_dataset('targets_p', data=np.asarray(batch_data['targets_p'], dtype=np.float32),
+                             maxshape=(None,), dtype=np.float32)
+            f.create_dataset('targets_c', data=np.asarray(batch_data['targets_c'], dtype=np.float32),
+                             maxshape=(None,), dtype=np.float32)
+            f.create_dataset('template_ids', data=np.asarray(batch_data['template_ids'], dtype=np.int32),
+                             maxshape=(None,), dtype=np.int32)
+            f.create_dataset('datasets', data=datasets_bytes, maxshape=(None,), dtype=h5py.string_dtype())
+            f.create_dataset('activations', data=activations_array, maxshape=maxshape, dtype=np.float32)
+            f.attrs['num_layers'] = metadata['num_layers']
+            f.attrs['num_heads'] = metadata['num_heads']
+            f.attrs['head_dim'] = metadata['head_dim']
+        else:
+            existing_metadata = load_activation_metadata(filename)
+            if existing_metadata != metadata:
+                raise ValueError("Metadata mismatch when appending activations to file.")
+
+            current_size = len(f['vignette_ids'])
+            new_size = current_size + len(batch_data['vignette_ids'])
+
+            f['vignette_ids'].resize((new_size,))
+            f['targets_p'].resize((new_size,))
+            f['targets_c'].resize((new_size,))
+            f['template_ids'].resize((new_size,))
+            f['datasets'].resize((new_size,))
+            f['activations'].resize((new_size, f['activations'].shape[1]))
+
+            f['vignette_ids'][current_size:] = vignette_ids_str
+            f['targets_p'][current_size:] = np.asarray(batch_data['targets_p'], dtype=np.float32)
+            f['targets_c'][current_size:] = np.asarray(batch_data['targets_c'], dtype=np.float32)
+            f['template_ids'][current_size:] = np.asarray(batch_data['template_ids'], dtype=np.int32)
+            f['datasets'][current_size:] = datasets_bytes
+            f['activations'][current_size:] = activations_array
+
+
+def load_activation_metadata(filename):
+    with h5py.File(filename, 'r') as f:
+        return {
+            'num_layers': int(f.attrs['num_layers']),
+            'num_heads': int(f.attrs['num_heads']),
+            'head_dim': int(f.attrs['head_dim'])
+        }
+
+
+def load_activation_batch(filename, indices=None, return_flat=True):
+    with h5py.File(filename, 'r') as f:
+        dataset = f['activations']
+        if indices is None:
+            activations = dataset[:]
+        else:
+            activations = dataset[indices]
+
+    activations = np.asarray(activations, dtype=np.float32)
+    if return_flat:
+        return activations
+
+    metadata = load_activation_metadata(filename)
+    return reconstruct_activations(activations, metadata)
+
+
+def reconstruct_activations(flat_activations, metadata):
+    _ensure_metadata_dict(metadata)
+    arr = np.asarray(flat_activations, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    num_layers = metadata['num_layers']
+    num_heads = metadata['num_heads']
+    head_dim = metadata['head_dim']
+    return arr.reshape((-1, num_layers, num_heads, head_dim))
+
+
+def select_activation_subset(activations, head_list, metadata):
+    """Return features for specific (layer, head) pairs from flat or reconstructed activations."""
+    reconstructed = reconstruct_activations(activations, metadata)
+    selected = [reconstructed[:, layer, head, :] for layer, head in head_list]
+    if not selected:
+        return np.empty((reconstructed.shape[0], 0), dtype=np.float32)
+    concatenated = np.concatenate(selected, axis=-1)
+    return concatenated.astype(np.float32)
+
+
+def count_saved_activations(filename):
+    if not os.path.exists(filename):
+        return 0
+    with h5py.File(filename, 'r') as f:
+        return len(f['vignette_ids'])
+
+
+def extractor_metadata(extractor: MistralAttentionHeadExtractor):
+    return {
+        'num_layers': extractor.get_num_layers(),
+        'num_heads': extractor.get_num_heads(),
+        'head_dim': extractor.get_head_dim(),
+    }
 
