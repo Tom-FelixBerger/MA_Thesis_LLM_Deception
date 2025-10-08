@@ -183,7 +183,7 @@ def main():
                     prob_p = probe_p.predict_proba(feat_p)[0, 1]
                     prob_c = probe_c.predict_proba(feat_c)[0, 1]
                     p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
-                    reward = float(1.0 - p_disagree)
+                    reward = float(1.0 - 2.0 * p_disagree)
                 print(f"Processing Vignette {i+1} of {BATCH_SIZE} | Vignette ID: {vignette['id']}\n | Classification: {classification} | Reward: {reward:.4f}")
 
 
