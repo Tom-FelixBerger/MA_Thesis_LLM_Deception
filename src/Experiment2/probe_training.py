@@ -15,13 +15,18 @@ import utils
 
 warnings.filterwarnings('ignore')
 
-INPUT_FILE = '..\\..\\data\\vignette_activations.h5'
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / 'data'
+PLOTS_DIR = BASE_DIR / 'plots'
+MODEL_SAVES_DIR = BASE_DIR / 'model_saves'
+INPUT_PATH = DATA_DIR / 'vignette_activations.h5'
 TARGETS = ['targets_p', 'targets_c']
+
 
 class DataLoader:
     def __init__(self, filename):
-        self.filename = filename
-        self.metadata = utils.load_activation_metadata(filename)
+        self.filename = Path(filename)
+        self.metadata = utils.load_activation_metadata(str(self.filename))
         self._train_indices = None
         self._val_indices = None
         self._test_indices = None
@@ -30,7 +35,7 @@ class DataLoader:
     def _ensure_indices_loaded(self):
         if self._train_indices is not None:
             return
-        with h5py.File(self.filename, 'r') as f:
+        with h5py.File(str(self.filename), 'r') as f:
             datasets = f['datasets'][:]
             datasets_str = [ds.decode('utf-8') if isinstance(ds, bytes) else str(ds) for ds in datasets]
             datasets_arr = np.array(datasets_str)
@@ -40,7 +45,7 @@ class DataLoader:
 
     def _ensure_activations_loaded(self):
         if self._activations_flat is None:
-            self._activations_flat = utils.load_activation_batch(self.filename, return_flat=True)
+            self._activations_flat = utils.load_activation_batch(str(self.filename), return_flat=True)
 
     def get_split_info(self):
         self._ensure_indices_loaded()
@@ -48,7 +53,7 @@ class DataLoader:
 
     def load_targets(self, target_name):
         self._ensure_indices_loaded()
-        with h5py.File(self.filename, 'r') as f:
+        with h5py.File(str(self.filename), 'r') as f:
             targets_all = f[target_name][:]
         return (
             targets_all[self._train_indices],
@@ -97,7 +102,7 @@ def plot_accuracy_heatmap(accuracies, target_name, num_layers, num_heads):
     plt.xlabel('Attention Head')
     plt.ylabel('Layer')
     plt.tight_layout()
-    plt.savefig(f'..\\..\\plots\\{target_name}_accuracy_heatmap.png', dpi=300, bbox_inches='tight')
+    plt.savefig(PLOTS_DIR / f"{target_name}_accuracy_heatmap.png", dpi=300, bbox_inches='tight')
     plt.close()
 
 def get_top_heads(accuracies, num_heads, n_heads=10, layer_range=None):
@@ -129,15 +134,18 @@ def evaluate_classifier(clf, X_test, y_test):
 
 def main():
     print("Initializing data loader...")
-    data_loader = DataLoader(INPUT_FILE)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    MODEL_SAVES_DIR.mkdir(parents=True, exist_ok=True)
+    data_loader = DataLoader(INPUT_PATH)
     num_layers = data_loader.metadata['num_layers']
     num_heads = data_loader.metadata['num_heads']
     n_train, n_val, n_test = data_loader.get_split_info()
     print(f"Training samples: {n_train}\nValidation samples: {n_val}\nTest samples: {n_test}")
 
     for target in TARGETS:
-        output_filename = f'..\\..\\data\\{target}_analysis_results.txt'
-        with open(output_filename, 'w') as outfile:
+        output_path = DATA_DIR / f"{target}_analysis_results.txt"
+        with output_path.open('w') as outfile:
             header = f"\n{'='*50}\nAnalyzing target: {target}\n{'='*50}\n"
             print(header)
             outfile.write(header)
@@ -194,16 +202,16 @@ def main():
             for k, v in metrics_half.items():
                 outfile.write(f"{k:<15} {v:.4f}\n")
 
-            joblib.dump(clf_half, f"..\\..\\model_saves\\logreg_clf_{target}.pkl")
+            joblib.dump(clf_half, MODEL_SAVES_DIR / f"logreg_clf_{target}.pkl")
 
             # Save head and layer info for half classifier
-            heads_info_file = f"..\\..\\data\\top_heads_{target}.json"
-            with open(heads_info_file, 'w') as f:
+            heads_info_path = DATA_DIR / f"top_heads_{target}.json"
+            with heads_info_path.open('w') as f:
                 json.dump([(int(layer), int(head)) for layer, head in top_heads_half], f)
-            print(f"Head/Layer info saved: {heads_info_file}")
+            print(f"Head/Layer info saved: {heads_info_path}")
 
-            print(f"Results saved to: {output_filename}")
-            print(f"Final classifier saved: logreg_clf_{target}.pkl")
+            print(f"Results saved to: {output_path}")
+            print(f"Final classifier saved: {MODEL_SAVES_DIR / f'logreg_clf_{target}.pkl'}")
 
             plot_accuracy_heatmap(accuracies, target, num_layers, num_heads)
 

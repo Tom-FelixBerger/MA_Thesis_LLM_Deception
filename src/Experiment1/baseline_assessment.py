@@ -4,7 +4,6 @@ and saves results incrementally to 'model_responses_baseline_assessment.jsonl'.
 It uses substring matching for robust classification of the model's response.
 """
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -12,15 +11,17 @@ sys.path.append(str(Path(__file__).parent.parent))
 import utils
 
 SAVE_INTERVAL = 10
-OUTPUT_FILENAME = '..\\..\\data\\model_responses_baseline_assessment.jsonl'
-VIGNETTE_PATH = '..\\..\\data\\vignettes.jsonl'
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / 'data'
+OUTPUT_PATH = DATA_DIR / 'model_responses_baseline_assessment.jsonl'
 
 
 def main():
     tokenizer = utils.load_tokenizer()
     model = utils.load_model()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     vignettes = utils.load_vignettes([utils.DATASET_NAMES[s] for s in ['excluded', 'assessment', 'additional']])
-    vignettes_to_process, total_to_process, start_index = utils.filter_processed_vignettes(vignettes, OUTPUT_FILENAME)
+    vignettes_to_process, total_to_process, start_index = utils.filter_processed_vignettes(vignettes, OUTPUT_PATH)
 
     if total_to_process == 0:
         print("All vignettes already processed. Exiting.")
@@ -54,8 +55,8 @@ def main():
         results_buffer.append(record)
 
         if len(results_buffer) >= SAVE_INTERVAL or i == total_to_process - 1:
-            print(f"Saving {len(results_buffer)} results to {OUTPUT_FILENAME}...")
-            with open(OUTPUT_FILENAME, 'a', encoding='utf-8') as f:
+            print(f"Saving {len(results_buffer)} results to {OUTPUT_PATH}...")
+            with OUTPUT_PATH.open('a', encoding='utf-8') as f:
                 for buffered_result in results_buffer:
                     f.write(json.dumps(buffered_result, ensure_ascii=False) + '\n')
             results_buffer = []

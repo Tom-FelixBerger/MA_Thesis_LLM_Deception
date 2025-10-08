@@ -5,9 +5,9 @@ in a structured JSONL format.
 """
 import itertools
 import json
+from pathlib import Path
+
 import utils
-
-
 TEMPLATES = [
     {
         'scenario': '{object} of {protagonist} is usually {attribute_a}, but earlier today you tried it without asking.\n'+
@@ -496,9 +496,14 @@ def generate_vignettes(templates):
 
 def main():
     vignettes = generate_vignettes(TEMPLATES)
-    with open('..\data\\vignettes.jsonl', 'w', encoding='utf-8') as f:
+    base_dir = Path(__file__).resolve().parent.parent
+    output_path = base_dir / 'data' / 'vignettes.jsonl'
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open('w', encoding='utf-8') as f:
         for vignette in vignettes:
             f.write(json.dumps(vignette, ensure_ascii=False) + "\n")
+
 
 if __name__ == '__main__':
     main()
