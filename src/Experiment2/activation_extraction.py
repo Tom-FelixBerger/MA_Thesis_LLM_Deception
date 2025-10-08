@@ -3,7 +3,6 @@ This script forward-passes the vignettes from training_vignettes.jsonl and testi
 through Mistral-7B-v0.3, captures activations, and saves them in an efficient format.
 """
 import h5py
-import os
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -11,10 +10,13 @@ import utils
 
 
 BATCH_SIZE = 10  # Save every 10 processed vignettes
-OUTPUT_FILE = "..\\..\\data\\vignette_activations.h5"
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / 'data'
+OUTPUT_FILE = DATA_DIR / 'vignette_activations.h5'
 
 def main():
     extractor = utils.MistralAttentionHeadExtractor()
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     vignettes = utils.load_vignettes([utils.DATASET_NAMES['probe_train'], utils.DATASET_NAMES['probe_validate'], utils.DATASET_NAMES['probe_test']])
     
     # Find where to continue processing
@@ -78,7 +80,7 @@ def main():
         activation_dims = f['activations'].shape[1]
         print(f"Total entries: {total_entries}")
         print(f"Activation dimensions per entry: {activation_dims}")
-        print(f"File size: {os.path.getsize(OUTPUT_FILE) / (1024*1024):.1f} MB")
+        print(f"File size: {OUTPUT_FILE.stat().st_size / (1024*1024):.1f} MB")
 
 if __name__ == "__main__":
     main()

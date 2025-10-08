@@ -1,45 +1,47 @@
-import os
-import json
 import random
 import joblib
 import numpy as np
-import re
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig, BitsAndBytesConfig
-from transformers.tokenization_utils_base import BatchEncoding
 import bitsandbytes as bnb
+from transformers.tokenization_utils_base import BatchEncoding
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 import sys
-from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 import utils
 
+CLASSIFIER_PATH_P = Path(__file__).resolve().parents[2] / "model_saves" / "logreg_clf_targets_p.pkl"
+CLASSIFIER_PATH_C = Path(__file__).resolve().parents[2] / "model_saves" / "logreg_clf_targets_c.pkl"
 
-CLASSIFIER_PATH_P = "..\\..\\model_saves\\logreg_clf_targets_p.pkl"
-CLASSIFIER_PATH_C = "..\\..\\model_saves\\logreg_clf_targets_c.pkl"
-
-OUTPUT_DIR = "..\\..\\model_saves\\mistral_reinforce_ckpt"
-
-CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "rl_checkpoint.pt")
-MODEL_SAVE_DIR = os.path.join(OUTPUT_DIR, "model_saved")
+OUTPUT_DIR = Path(__file__).resolve().parents[2] / "model_saves" / "mistral_reinforce_lora_ckpt"
+ADAPTER_SAVE_DIR = OUTPUT_DIR / "adapter"
+TOKENIZER_SAVE_DIR = OUTPUT_DIR / "tokenizer"
+CHECKPOINT_FILE = OUTPUT_DIR / "optimizer_state.pt"
 
 BATCH_SIZE = 10
 NUM_UPDATES = 20
 SEED = 42
+TARGET_LAYERS = list(range(16, 32))
 
-def save_everything(rl_model, tokenizer, optimizer, update_idx=None):
-    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
-    rl_model.save_pretrained(MODEL_SAVE_DIR)
-    tokenizer.save_pretrained(MODEL_SAVE_DIR)
+
+def save_everything(model, tokenizer, optimizer, update_idx=None):
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ADAPTER_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    TOKENIZER_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+    model.save_pretrained(ADAPTER_SAVE_DIR)
+    tokenizer.save_pretrained(TOKENIZER_SAVE_DIR)
+
     ckpt = {
         "optim_state": optimizer.state_dict(),
-        "update_idx": update_idx
+        "update_idx": update_idx,
     }
     torch.save(ckpt, CHECKPOINT_FILE)
-    print("Saved checkpoint and adapters.")
+    print("Saved checkpoint and LoRA adapters.")
+
 
 def compute_logprob_sequence(model, input_prompt_ids, generated_text, tokenizer):
     if isinstance(input_prompt_ids, BatchEncoding):
@@ -53,24 +55,42 @@ def compute_logprob_sequence(model, input_prompt_ids, generated_text, tokenizer)
 
     input_prompt_ids = input_prompt_ids.to(model.device, dtype=torch.long)
     gen_ids = tokenizer(
-        generated_text, 
-        return_tensors="pt", 
+        generated_text,
+        return_tensors="pt",
         add_special_tokens=False,
-        truncation=False
+        truncation=False,
     ).input_ids.to(model.device)
     if gen_ids.shape[1] == 0:
         return torch.tensor(0.0, device=model.device)
     full_ids = torch.cat([input_prompt_ids, gen_ids], dim=1).to(model.device)
     outputs = model(full_ids)
     logits = outputs.logits
-    L = input_prompt_ids.shape[1]
-    pred_logits = logits[:, L-1:-1, :]
+    prefix_len = input_prompt_ids.shape[1]
+    pred_logits = logits[:, prefix_len - 1:-1, :]
     logprobs = F.log_softmax(pred_logits, dim=-1)
     token_logps = logprobs.gather(2, gen_ids.unsqueeze(-1)).squeeze(-1)
     return token_logps.sum()
 
+
+def build_target_modules():
+    suffixes = [
+        "self_attn.q_proj",
+        "self_attn.k_proj",
+        "self_attn.v_proj",
+        "self_attn.o_proj",
+        "mlp.w1",
+        "mlp.w2",
+        "mlp.w3",
+    ]
+    targets = []
+    for layer_idx in TARGET_LAYERS:
+        for suffix in suffixes:
+            targets.append(f"layers.{layer_idx}.{suffix}")
+    return targets
+
+
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     random.seed(SEED)
     np.random.seed(SEED)
@@ -84,77 +104,63 @@ def main():
     probe_c = joblib.load(CLASSIFIER_PATH_C)
 
     tokenizer = utils.load_tokenizer()
-    rl_model = utils.load_model()
+    model = utils.load_model()
+    model.config.use_cache = False
 
-    # Prepare model for k-bit training
-    rl_model = prepare_model_for_kbit_training(rl_model)
-    rl_model.gradient_checkpointing_enable()
+    model = prepare_model_for_kbit_training(model)
+    model.gradient_checkpointing_enable()
 
-    # LoRA configuration
     lora_config = LoraConfig(
         r=8,
         lora_alpha=16,
-        target_modules=["q_proj","k_proj","v_proj","o_proj","w1","w2","w3"],
+        target_modules=build_target_modules(),
         lora_dropout=0.05,
         bias="none",
-        task_type="CAUSAL_LM"
+        task_type="CAUSAL_LM",
     )
 
-    print("Wrapping full model with LoRA...")
-    rl_model = get_peft_model(rl_model, lora_config)
+    print("Applying LoRA to layers 16-31 only...")
+    model = get_peft_model(model, lora_config)
 
-    # Freeze everything
-    for _, p in rl_model.named_parameters():
-        if p.dtype in (torch.float16, torch.float32, torch.bfloat16):
-            p.requires_grad = False
+    for param in model.parameters():
+        if param.dtype in (torch.float16, torch.float32, torch.bfloat16):
+            param.requires_grad = False
 
-    # Enable LoRA adapter weights and optionally top layers
-    for name, p in rl_model.named_parameters():
-        if p.dtype not in (torch.float16, torch.float32, torch.bfloat16):
-            continue  # skip quantized tensors
-
+    for name, param in model.named_parameters():
+        if param.dtype not in (torch.float16, torch.float32, torch.bfloat16):
+            continue
         if "lora_" in name:
-            p.requires_grad = True
-        else:
-            # optional: unfreeze base weights in top layers (if desired)
-            m = re.search(r"layers\.(\d+)\.", name)
-            if m:
-                layer_idx = int(m.group(1))
-                if layer_idx >= 16:
-                    p.requires_grad = True
+            param.requires_grad = True
 
-    print("Creating 8-bit Adam optimizer...")
-    optimizer = bnb.optim.AdamW8bit(rl_model.parameters(), lr=1e-4)
+    optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-4)
 
-    # Checkpoint loading
-    if os.path.exists(CHECKPOINT_FILE):
-        print("Loading checkpoint:", CHECKPOINT_FILE)
+    start_update = 0
+    if CHECKPOINT_FILE.exists():
+        print(f"Loading checkpoint: {CHECKPOINT_FILE}")
         ckpt = torch.load(CHECKPOINT_FILE, map_location="cpu")
         if "optim_state" in ckpt:
             try:
                 optimizer.load_state_dict(ckpt["optim_state"])
                 print("Loaded optimizer state.")
-            except Exception as e:
-                print("Warning: could not load optimizer state:", e)
+            except Exception as exc:
+                print(f"Warning: could not load optimizer state: {exc}")
         start_update = ckpt.get("update_idx", 0) + 1
-    else:
-        start_update = 0
 
     extractor = utils.MistralAttentionHeadExtractor()
     extractor_meta = utils.extractor_metadata(extractor)
-    vignettes = utils.load_vignettes(datasets=utils.DATASET_NAMES['finetuning'])
+    vignettes = utils.load_vignettes([utils.DATASET_NAMES['finetuning']])
     random.shuffle(vignettes)
 
-    v_idx_iter = 0
+    vignette_index = 0
 
     for update in range(start_update, NUM_UPDATES):
-        print(f"Update {update+1} of {NUM_UPDATES}")
+        print(f"Update {update + 1} of {NUM_UPDATES}")
 
-        if v_idx_iter + BATCH_SIZE > len(vignettes):
+        if vignette_index + BATCH_SIZE > len(vignettes):
             random.shuffle(vignettes)
-            v_idx_iter = 0
-        batch = vignettes[v_idx_iter: v_idx_iter + BATCH_SIZE]
-        v_idx_iter += BATCH_SIZE
+            vignette_index = 0
+        batch = vignettes[vignette_index:vignette_index + BATCH_SIZE]
+        vignette_index += BATCH_SIZE
 
         batch_rewards = []
         batch_logprobs = []
@@ -165,12 +171,11 @@ def main():
             response_a = vignette["response_a"]
             response_b = vignette["response_b"]
             for question in [vignette["question_1"], vignette["question_2"]]:
-
                 prompt = scenario + instruction
 
-                rl_model.eval()
+                model.eval()
                 with torch.no_grad():
-                    full_response, only_new = utils.generate_text(rl_model, tokenizer, prompt)
+                    full_response, only_new = utils.generate_text(model, tokenizer, prompt)
 
                 classification = utils.classify_response(only_new, response_a, response_b)
 
@@ -185,34 +190,37 @@ def main():
                     prob_c = probe_c.predict_proba(feat_c)[0, 1]
                     p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
                     reward = float(1.0 - 2.0 * p_disagree)
-                print(f"Processing Vignette {i+1} of {BATCH_SIZE} | Vignette ID: {vignette['id']}\n | Classification: {classification} | Reward: {reward:.4f}")
+                print(
+                    f"Processing Vignette {i + 1} of {BATCH_SIZE} | "
+                    f"Vignette ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"
+                )
 
-
-            rl_model.train()
-            prompt_t = utils.tokenize_input(prompt, tokenizer).to(rl_model.device)
-            logprob_sum = compute_logprob_sequence(rl_model, prompt_t, only_new, tokenizer)
+            model.train()
+            prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
+            logprob_sum = compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
 
             batch_rewards.append(reward)
             batch_logprobs.append(logprob_sum)
 
         losses = []
         optimizer.zero_grad()
-        for r, lp in zip(batch_rewards, batch_logprobs):
-            losses.append(-r * lp)
+        for reward_value, logprob_value in zip(batch_rewards, batch_logprobs):
+            losses.append(-reward_value * logprob_value)
 
-        if len(losses) > 0:
+        if losses:
             loss_batch = torch.stack(losses).mean()
             loss_batch.backward()
-            torch.nn.utils.clip_grad_norm_(rl_model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             loss_value = loss_batch.item()
         else:
             loss_value = 0.0
 
-        save_everything(rl_model, tokenizer, optimizer, update_idx=update)
-        print(f"=== Completed update {update+1}/{NUM_UPDATES} | loss={loss_value:.4f} ===")
+        save_everything(model, tokenizer, optimizer, update_idx=update)
+        print(f"=== Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f} ===")
 
-    print("Training finished. Final adapters saved to:", MODEL_SAVE_DIR)
+    print(f"Training finished. Final adapters saved to: {ADAPTER_SAVE_DIR}")
+
 
 if __name__ == "__main__":
     main()
