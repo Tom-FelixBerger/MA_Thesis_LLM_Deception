@@ -129,7 +129,7 @@ def main():
         summaries[label] = summarize_records(records)
         all_records.extend(records)
 
-    with open(RESULTS_PATH, "w", encoding="utf-8") as f:
+    with RESULTS_PATH.open("w", encoding="utf-8") as f:
         for record in all_records:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -142,7 +142,7 @@ def main():
         "comparisons": comparisons,
     }
 
-    with open(SUMMARY_PATH, "w", encoding="utf-8") as f:
+    with SUMMARY_PATH.open("w", encoding="utf-8") as f:
         json.dump(summary_output, f, ensure_ascii=False, indent=2)
 
     print("=== Summary of deceptive rates ===")

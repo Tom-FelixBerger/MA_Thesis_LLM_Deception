@@ -1,7 +1,6 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.ticker import PercentFormatter
-import os
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -15,10 +14,12 @@ COLORS = {
 }
 CLASSIFICATION_ORDER = ["deceptive", "honest", "invalid"]
 
-# Paths
-FILE_PATH_RESP = r"..\..\data\model_responses_baseline_assessment.jsonl"
-FILE_PATH_VIGN = r"..\..\data\vignettes.jsonl"
-PLOT_DIR = r"..\..\plots"
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / 'data'
+PLOT_DIR = BASE_DIR / 'plots'
+RESPONSES_PATH = DATA_DIR / 'model_responses_baseline_assessment.jsonl'
+VIGNETTES_PATH = DATA_DIR / 'vignettes.jsonl'
+
 
 
 def plot_classification_bar(data, title, filename, ylabel="Relative Frequency"):
@@ -35,7 +36,7 @@ def plot_classification_bar(data, title, filename, ylabel="Relative Frequency"):
     plt.gca().yaxis.set_major_formatter(PercentFormatter(1.0))
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
-    plt.savefig(os.path.join(PLOT_DIR, filename))
+    plt.savefig(PLOT_DIR / filename)
     plt.close()
 
 
@@ -54,14 +55,15 @@ def plot_grouped_classification(grouped_relative, title, filename):
     plt.legend(title="Classification", bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
-    plt.savefig(os.path.join(PLOT_DIR, filename))
+    plt.savefig(PLOT_DIR / filename)
     plt.close()
 
 
 def main():
+    PLOT_DIR.mkdir(parents=True, exist_ok=True)
     # Load JSONL files
-    df = pd.read_json(FILE_PATH_RESP, lines=True)
-    vign_df = pd.read_json(FILE_PATH_VIGN, lines=True)
+    df = pd.read_json(RESPONSES_PATH, lines=True)
+    vign_df = pd.read_json(VIGNETTES_PATH, lines=True)
 
     # Calculate overall classification frequencies
     overall_counts = df["classification"].value_counts()
