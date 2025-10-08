@@ -8,6 +8,7 @@ import re
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig, BitsAndBytesConfig
+from transformers.tokenization_utils_base import BatchEncoding
 import bitsandbytes as bnb
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
@@ -41,6 +42,16 @@ def save_everything(rl_model, tokenizer, optimizer, update_idx=None):
     print("Saved checkpoint and adapters.")
 
 def compute_logprob_sequence(model, input_prompt_ids, generated_text, tokenizer):
+    if isinstance(input_prompt_ids, BatchEncoding):
+        input_prompt_ids = input_prompt_ids["input_ids"]
+
+    if not isinstance(input_prompt_ids, torch.Tensor):
+        input_prompt_ids = torch.as_tensor(input_prompt_ids, device=model.device)
+
+    if input_prompt_ids.dim() == 1:
+        input_prompt_ids = input_prompt_ids.unsqueeze(0)
+
+    input_prompt_ids = input_prompt_ids.to(model.device, dtype=torch.long)
     gen_ids = tokenizer(
         generated_text, 
         return_tensors="pt", 
