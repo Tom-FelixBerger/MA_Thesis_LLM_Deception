@@ -28,15 +28,15 @@ Layer 13, Head 20: Accuracy = 0.9167
 Layer 15, Head 22: Accuracy = 0.9259
 
 --- Test Set Evaluation (Full range top 10) ---
-accuracy        0.8295
+accuracy        0.8287
 precision       0.8034
 recall          0.8704
 f1              0.8356
-roc_auc         0.9507
+roc_auc         0.9503
 
 --- Test Set Evaluation (First half top 10) ---
-accuracy        0.8894
+accuracy        0.8889
 precision       0.8182
 recall          1.0000
 f1              0.9000
-roc_auc         0.9877
+roc_auc         0.9876

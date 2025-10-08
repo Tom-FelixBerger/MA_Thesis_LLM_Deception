@@ -28,14 +28,14 @@ Layer 13, Head 03: Accuracy = 1.0000
 Layer 13, Head 27: Accuracy = 1.0000
 
 --- Test Set Evaluation (Full range top 10) ---
-accuracy        0.9585
+accuracy        0.9583
 precision       0.9231
 recall          1.0000
 f1              0.9600
 roc_auc         0.9990
 
 --- Test Set Evaluation (First half top 10) ---
-accuracy        0.9585
+accuracy        0.9583
 precision       0.9231
 recall          1.0000
 f1              0.9600
