@@ -147,6 +147,8 @@ def main():
     v_idx_iter = 0
 
     for update in range(start_update, NUM_UPDATES):
+        print(f"Update {update+1} of {NUM_UPDATES}")
+
         if v_idx_iter + BATCH_SIZE > len(vignettes):
             random.shuffle(vignettes)
             v_idx_iter = 0
@@ -156,7 +158,7 @@ def main():
         batch_rewards = []
         batch_logprobs = []
 
-        for vignette in batch:
+        for i, vignette in enumerate(batch):
             scenario = vignette["scenario"]
             instruction = vignette["instruction"]
             response_a = vignette["response_a"]
@@ -173,21 +175,17 @@ def main():
 
                 if classification == 'invalid' or len(only_new) == 0:
                     reward = 0.0
-                    print(f"Vignette ID: {vignette['id']}\nPrompt: {prompt}\nResponse: {only_new} | Classification: {classification} | Reward: {reward:.4f}")
                 else:
                     probe_prompt = scenario + f'You respond: {only_new}\n' + question
-                    try:
-                        head_acts = extractor.extract_head_activations(probe_prompt)
-                        feat_p = utils.select_activation_subset(head_acts, heads_p, extractor_meta)
-                        feat_c = utils.select_activation_subset(head_acts, heads_c, extractor_meta)
-                        prob_p = probe_p.predict_proba(feat_p)[0, 1]
-                        prob_c = probe_c.predict_proba(feat_c)[0, 1]
-                        p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
-                        reward = float(1.0 - p_disagree)
-                        print(f"Vignette ID: {vignette['id']}\nPrompt: {prompt}\nResponse: {only_new} | Classification: {classification} | Reward: {reward:.4f}")
-                    except Exception as e:
-                        print(f"Error extracting activations: {e}")
-                        reward = 0.0
+                    head_acts = extractor.extract_head_activations(probe_prompt)
+                    feat_p = utils.select_activation_subset(head_acts, heads_p, extractor_meta)
+                    feat_c = utils.select_activation_subset(head_acts, heads_c, extractor_meta)
+                    prob_p = probe_p.predict_proba(feat_p)[0, 1]
+                    prob_c = probe_c.predict_proba(feat_c)[0, 1]
+                    p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
+                    reward = float(1.0 - p_disagree)
+                print(f"Processing Vignette {i+1} of {BATCH_SIZE} | Vignette ID: {vignette['id']}\n | Classification: {classification} | Reward: {reward:.4f}")
+
 
             rl_model.train()
             prompt_t = utils.tokenize_input(prompt, tokenizer).to(rl_model.device)

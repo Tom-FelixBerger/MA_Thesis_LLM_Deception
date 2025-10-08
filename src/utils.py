@@ -38,7 +38,7 @@ def load_model():
         device_map="cuda",
         dtype=torch.float16,
         trust_remote_code=True,
-        force_download=True,        # don't use cached version, which may be manipulated already
+        # force_download=True,        # don't use cached version, which may be manipulated already
         attn_implementation="eager" # eager attention is necessary for activation extraction
     )
     return model
