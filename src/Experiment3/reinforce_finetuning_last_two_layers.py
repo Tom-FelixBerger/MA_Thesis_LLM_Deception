@@ -89,6 +89,25 @@ def unfreeze_last_layers(model, num_layers=2):
     return trainable_params
 
 
+def _optimizer_state_matches(saved_state, optimizer):
+    if not isinstance(saved_state, dict):
+        return False
+
+    saved_groups = saved_state.get("param_groups")
+    if saved_groups is None:
+        return False
+
+    current_groups = optimizer.param_groups
+    if len(saved_groups) != len(current_groups):
+        return False
+
+    for saved_group, current_group in zip(saved_groups, current_groups):
+        if len(saved_group.get("params", ())) != len(current_group.get("params", ()))):
+            return False
+
+    return True
+
+
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -107,21 +126,20 @@ def main():
     model = utils.load_model(quantized=False, device_map="cuda")
     model.config.use_cache = False
 
-    model.gradient_checkpointing_enable()
-
     trainable_params = unfreeze_last_layers(model, num_layers=TRAINABLE_LAYERS)
     optimizer = AdamW(trainable_params, lr=5e-5)
 
     start_update = 0
     if CHECKPOINT_FILE.exists():
         print(f"Loading checkpoint: {CHECKPOINT_FILE}")
-        ckpt = torch.load(CHECKPOINT_FILE, map_location="cpu")
+        ckpt = torch.load(CHECKPOINT_FILE, map_location="cpu", weights_only=False)
         if "optim_state" in ckpt:
-            try:
-                optimizer.load_state_dict(ckpt["optim_state"])
+            optim_state = ckpt["optim_state"]
+            if _optimizer_state_matches(optim_state, optimizer):
+                optimizer.load_state_dict(optim_state)
                 print("Loaded optimizer state.")
-            except Exception as exc:
-                print(f"Warning: could not load optimizer state: {exc}")
+            else:
+                print("Optimizer state in checkpoint is incompatible with current model; skipping load.")
         start_update = ckpt.get("update_idx", 0) + 1
 
     extractor = utils.MistralAttentionHeadExtractor()
