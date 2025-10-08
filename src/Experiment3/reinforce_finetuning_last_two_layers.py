@@ -7,7 +7,6 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 from transformers.tokenization_utils_base import BatchEncoding
-from peft import prepare_model_for_kbit_training
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -83,7 +82,6 @@ def unfreeze_last_layers(model, num_layers=2):
     trainable_params = []
     for layer_idx in range(first_trainable, total_layers):
         layer = model.model.layers[layer_idx]
-        layer.to(torch.float16)
         for param in layer.parameters():
             if param.dtype in (torch.float16, torch.float32, torch.bfloat16):
                 param.requires_grad = True
@@ -106,10 +104,9 @@ def main():
     probe_c = joblib.load(CLASSIFIER_PATH_C)
 
     tokenizer = utils.load_tokenizer()
-    model = utils.load_model()
+    model = utils.load_model(quantized=False, device_map="cuda")
     model.config.use_cache = False
 
-    model = prepare_model_for_kbit_training(model)
     model.gradient_checkpointing_enable()
 
     trainable_params = unfreeze_last_layers(model, num_layers=TRAINABLE_LAYERS)
