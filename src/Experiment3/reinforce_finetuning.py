@@ -3,7 +3,6 @@ import json
 import random
 import joblib
 import numpy as np
-from typing import List, Tuple, Dict
 import re
 
 import torch
@@ -40,23 +39,6 @@ def save_everything(rl_model, tokenizer, optimizer, update_idx=None):
     }
     torch.save(ckpt, CHECKPOINT_FILE)
     print("Saved checkpoint and adapters.")
-
-def select_probe_features(head_activations, head_list, extractor):
-    """
-    Selects features for specific (layer, head) pairs from a flattened activation vector.
-    Returns a feature array of shape (1, len(head_list) * head_dim).
-    """
-    num_heads = extractor.num_heads
-    head_dim = extractor.head_dim
-    vectors = []
-
-    for layer_idx, head_idx in head_list:
-        start = (layer_idx * num_heads + head_idx) * head_dim
-        end = start + head_dim
-        vectors.append(head_activations[start:end])
-
-    feat = np.concatenate(vectors, axis=0).astype(np.float32)
-    return feat.reshape(1, -1)
 
 def compute_logprob_sequence(model, input_prompt_ids, generated_text, tokenizer):
     gen_ids = tokenizer(
@@ -148,6 +130,7 @@ def main():
         start_update = 0
 
     extractor = utils.MistralAttentionHeadExtractor()
+    extractor_meta = utils.extractor_metadata(extractor)
     vignettes = utils.load_vignettes(datasets=utils.DATASET_NAMES['finetuning'])
 
     v_idx_iter = 0
@@ -184,8 +167,8 @@ def main():
                     probe_prompt = scenario + f'You respond: {only_new}\n' + question
                     try:
                         head_acts = extractor.extract_head_activations(probe_prompt)
-                        feat_p = select_probe_features(head_acts, heads_p, extractor)
-                        feat_c = select_probe_features(head_acts, heads_c, extractor)
+                        feat_p = utils.select_activation_subset(head_acts, heads_p, extractor_meta)
+                        feat_c = utils.select_activation_subset(head_acts, heads_c, extractor_meta)
                         prob_p = probe_p.predict_proba(feat_p)[0, 1]
                         prob_c = probe_c.predict_proba(feat_c)[0, 1]
                         p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c

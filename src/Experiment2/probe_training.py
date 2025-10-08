@@ -7,70 +7,81 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import warnings
 import joblib
 import json
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).parent.parent))
+import utils
 
 warnings.filterwarnings('ignore')
 
-# Constants
-NUM_LAYERS = 32
-NUM_HEADS = 32
-NUM_DIMENSIONS = 128
 INPUT_FILE = '..\\..\\data\\vignette_activations.h5'
 TARGETS = ['targets_p', 'targets_c']
 
 class DataLoader:
     def __init__(self, filename):
         self.filename = filename
+        self.metadata = utils.load_activation_metadata(filename)
         self._train_indices = None
         self._val_indices = None
         self._test_indices = None
-        self._total_samples = None
+        self._activations_flat = None
 
-    def _load_dataset_splits(self):
+    def _ensure_indices_loaded(self):
+        if self._train_indices is not None:
+            return
         with h5py.File(self.filename, 'r') as f:
             datasets = f['datasets'][:]
             datasets_str = [ds.decode('utf-8') if isinstance(ds, bytes) else str(ds) for ds in datasets]
-            self._train_indices = np.where(np.array(datasets_str) == 'probe_train')[0]
-            self._val_indices = np.where(np.array(datasets_str) == 'probe_validate')[0]
-            self._test_indices = np.where(np.array(datasets_str) == 'probe_test')[0]
-            self._total_samples = len(datasets)
+            datasets_arr = np.array(datasets_str)
+            self._train_indices = np.where(datasets_arr == 'probe_train')[0]
+            self._val_indices = np.where(datasets_arr == 'probe_validate')[0]
+            self._test_indices = np.where(datasets_arr == 'probe_test')[0]
+
+    def _ensure_activations_loaded(self):
+        if self._activations_flat is None:
+            self._activations_flat = utils.load_activation_batch(self.filename, return_flat=True)
 
     def get_split_info(self):
-        self._load_dataset_splits()
+        self._ensure_indices_loaded()
         return len(self._train_indices), len(self._val_indices), len(self._test_indices)
 
     def load_targets(self, target_name):
-        self._load_dataset_splits()
+        self._ensure_indices_loaded()
         with h5py.File(self.filename, 'r') as f:
             targets_all = f[target_name][:]
-            y_train = targets_all[self._train_indices]
-            y_val = targets_all[self._val_indices]
-            y_test = targets_all[self._test_indices]
-        return y_train, y_val, y_test
+        return (
+            targets_all[self._train_indices],
+            targets_all[self._val_indices],
+            targets_all[self._test_indices]
+        )
 
     def load_head_train_val(self, layer_idx, head_idx):
-        self._load_dataset_splits()
-        start_dim = (layer_idx * NUM_HEADS + head_idx) * NUM_DIMENSIONS
-        end_dim = start_dim + NUM_DIMENSIONS
-        with h5py.File(self.filename, 'r') as f:
-            features_all = f['activations'][:, start_dim:end_dim]
-            X_train = features_all[self._train_indices]
-            X_val = features_all[self._val_indices]
-        return X_train, X_val
+        self._ensure_indices_loaded()
+        self._ensure_activations_loaded()
+        features_all = utils.select_activation_subset(
+            self._activations_flat,
+            [(layer_idx, head_idx)],
+            self.metadata
+        )
+        return (
+            features_all[self._train_indices],
+            features_all[self._val_indices]
+        )
 
     def load_multiple_head_features(self, head_list):
-        self._load_dataset_splits()
-        all_dims = []
-        for layer_idx, head_idx in head_list:
-            start_dim = (layer_idx * NUM_HEADS + head_idx) * NUM_DIMENSIONS
-            for dim in range(NUM_DIMENSIONS):
-                all_dims.append(start_dim + dim)
-        all_dims = sorted(all_dims)
-        with h5py.File(self.filename, 'r') as f:
-            features_all = f['activations'][:, all_dims]
-            X_train = features_all[self._train_indices]
-            X_val = features_all[self._val_indices]
-            X_test = features_all[self._test_indices]
-        return X_train, X_val, X_test
+        self._ensure_indices_loaded()
+        self._ensure_activations_loaded()
+        features_all = utils.select_activation_subset(
+            self._activations_flat,
+            head_list,
+            self.metadata
+        )
+        return (
+            features_all[self._train_indices],
+            features_all[self._val_indices],
+            features_all[self._test_indices]
+        )
 
 def train_head_classifier(X_train, y_train, X_val, y_val):
     clf = LogisticRegression(max_iter=1000)
@@ -78,10 +89,10 @@ def train_head_classifier(X_train, y_train, X_val, y_val):
     y_pred = clf.predict(X_val)
     return accuracy_score(y_val, y_pred)
 
-def plot_accuracy_heatmap(accuracies, target_name):
+def plot_accuracy_heatmap(accuracies, target_name, num_layers, num_heads):
     plt.figure(figsize=(12, 10))
     sns.heatmap(accuracies, annot=False, cmap='viridis',
-                xticklabels=range(NUM_HEADS), yticklabels=range(NUM_LAYERS))
+                xticklabels=range(num_heads), yticklabels=range(num_layers))
     plt.title(f'Attention Head Classification Accuracy - {target_name.upper()}')
     plt.xlabel('Attention Head')
     plt.ylabel('Layer')
@@ -89,7 +100,7 @@ def plot_accuracy_heatmap(accuracies, target_name):
     plt.savefig(f'..\\..\\plots\\{target_name}_accuracy_heatmap.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-def get_top_heads(accuracies, n_heads=10, layer_range=None):
+def get_top_heads(accuracies, num_heads, n_heads=10, layer_range=None):
     if layer_range is not None:
         accuracies = accuracies[layer_range, :]
         offset = layer_range.start
@@ -99,8 +110,8 @@ def get_top_heads(accuracies, n_heads=10, layer_range=None):
     top_indices = np.argsort(flat_accuracies)[-n_heads:]
     top_heads = []
     for idx in top_indices:
-        layer_idx = idx // NUM_HEADS
-        head_idx = idx % NUM_HEADS
+        layer_idx = idx // num_heads
+        head_idx = idx % num_heads
         top_heads.append((layer_idx + offset, head_idx))
     return top_heads
 
@@ -119,6 +130,8 @@ def evaluate_classifier(clf, X_test, y_test):
 def main():
     print("Initializing data loader...")
     data_loader = DataLoader(INPUT_FILE)
+    num_layers = data_loader.metadata['num_layers']
+    num_heads = data_loader.metadata['num_heads']
     n_train, n_val, n_test = data_loader.get_split_info()
     print(f"Training samples: {n_train}\nValidation samples: {n_val}\nTest samples: {n_test}")
 
@@ -132,17 +145,22 @@ def main():
             y_train, y_val, y_test = data_loader.load_targets(target)
 
             print("Training individual attention head classifiers...")
-            accuracies = np.zeros((NUM_LAYERS, NUM_HEADS))
-            for layer_idx in range(NUM_LAYERS):
-                print(f"Processing layer {layer_idx + 1}/{NUM_LAYERS}")
-                for head_idx in range(NUM_HEADS):
+            accuracies = np.zeros((num_layers, num_heads))
+            for layer_idx in range(num_layers):
+                print(f"Processing layer {layer_idx + 1}/{num_layers}")
+                for head_idx in range(num_heads):
                     X_train_head, X_val_head = data_loader.load_head_train_val(layer_idx, head_idx)
                     accuracy = train_head_classifier(X_train_head, y_train, X_val_head, y_val)
                     accuracies[layer_idx, head_idx] = accuracy
                     del X_train_head, X_val_head
 
-            top_heads_full = get_top_heads(accuracies, n_heads=10)
-            top_heads_half = get_top_heads(accuracies, n_heads=10, layer_range=range(0, 16))
+            top_heads_full = get_top_heads(accuracies, num_heads=num_heads, n_heads=10)
+            top_heads_half = get_top_heads(
+                accuracies,
+                num_heads=num_heads,
+                n_heads=10,
+                layer_range=range(0, max(num_layers // 2, 1))
+            )
 
             outfile.write("\n--- Top 10 Attention Heads (Full range) ---\n")
             for layer, head in top_heads_full:
@@ -187,7 +205,7 @@ def main():
             print(f"Results saved to: {output_filename}")
             print(f"Final classifier saved: logreg_clf_{target}.pkl")
 
-            plot_accuracy_heatmap(accuracies, target)
+            plot_accuracy_heatmap(accuracies, target, num_layers, num_heads)
 
 if __name__ == "__main__":
     main()
