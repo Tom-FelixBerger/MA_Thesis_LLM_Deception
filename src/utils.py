@@ -24,34 +24,77 @@ DATASET_NAMES = {
     'additional': 'additional',
 }
 
-def load_model():
+def load_model(quantized=True, device_map="cuda"):
     print("Loading model: mistralai/Mistral-7B-Instruct-v0.3")
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        "mistralai/Mistral-7B-Instruct-v0.3",
-        quantization_config=bnb_config,
-        device_map="cuda",
-        dtype=torch.float16,
-        trust_remote_code=True,
-        # force_download=True,        # don't use cached version, which may be manipulated already
-        attn_implementation="eager" # eager attention is necessary for activation extraction
-    )
+    if quantized:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            quantization_config=bnb_config,
+            device_map=device_map,
+            dtype=torch.float16,
+            trust_remote_code=True,
+            # force_download=True,        # don't use cached version, which may be manipulated already
+            attn_implementation="eager" # eager attention is necessary for activation extraction
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            "mistralai/Mistral-7B-Instruct-v0.3",
+            device_map=device_map,
+            torch_dtype=torch.float16,
+            trust_remote_code=True,
+            attn_implementation="eager"
+        )
     return model
 
-def load_tokenizer():
+def load_tokenizer(path=None):
     print("Loading tokenizer ...")
+    model_name = path or "mistralai/Mistral-7B-Instruct-v0.3"
     tokenizer = AutoTokenizer.from_pretrained(
-        "mistralai/Mistral-7B-Instruct-v0.3",
+        model_name,
         trust_remote_code=True,
-        force_download=True         # don't use cached version, which may be manipulated already
+        force_download=True if path is None else False        # don't use cached version when loading base model
     )
     tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
+
+
+def build_vignette_prompt(vignette):
+    return vignette["scenario"] + vignette["instruction"]
+
+
+def generate_classification_record(model, tokenizer, vignette):
+    prompt = build_vignette_prompt(vignette)
+    full_response, only_new = generate_text(model, tokenizer, prompt)
+    classification = classify_response(only_new, vignette["response_a"], vignette["response_b"])
+    return {
+        "id": vignette["id"],
+        "template_id": vignette.get("template_id"),
+        "prompt": prompt,
+        "model_response_raw": only_new,
+        "classification": classification,
+    }
+
+
+def filter_processed_vignettes(vignettes, output_filename):
+    processed_ids = set()
+    if os.path.exists(output_filename):
+        print(f"Resuming: Checking {output_filename} for already processed vignettes...")
+        with open(output_filename, 'r', encoding='utf-8') as f:
+            for line in f:
+                data = json.loads(line)
+                processed_ids.add(data.get('id'))
+        print(f"Found {len(processed_ids)} already processed results.")
+
+    vignettes_to_process = [item for item in vignettes if item['id'] not in processed_ids]
+    total_to_process = len(vignettes_to_process)
+    start_index = len(vignettes) - total_to_process
+    return vignettes_to_process, total_to_process, start_index
 
 def tokenize_input(text, tokenizer):
     inputs = tokenizer(
