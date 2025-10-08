@@ -143,6 +143,7 @@ def main():
     extractor = utils.MistralAttentionHeadExtractor()
     extractor_meta = utils.extractor_metadata(extractor)
     vignettes = utils.load_vignettes(datasets=utils.DATASET_NAMES['finetuning'])
+    random.shuffle(vignettes)
 
     v_idx_iter = 0
 
