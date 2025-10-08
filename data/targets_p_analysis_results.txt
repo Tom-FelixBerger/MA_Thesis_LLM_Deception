@@ -1,0 +1,42 @@
+
+==================================================
+Analyzing target: targets_p
+==================================================
+
+--- Top 10 Attention Heads (Full range) ---
+Layer 13, Head 11: Accuracy = 0.9583
+Layer 13, Head 05: Accuracy = 0.9676
+Layer 13, Head 04: Accuracy = 0.9722
+Layer 13, Head 15: Accuracy = 0.9722
+Layer 13, Head 07: Accuracy = 0.9861
+Layer 13, Head 22: Accuracy = 0.9954
+Layer 13, Head 14: Accuracy = 1.0000
+Layer 13, Head 03: Accuracy = 1.0000
+Layer 13, Head 29: Accuracy = 1.0000
+Layer 13, Head 27: Accuracy = 1.0000
+
+--- Top 10 Attention Heads (First half layers) ---
+Layer 13, Head 11: Accuracy = 0.9583
+Layer 13, Head 05: Accuracy = 0.9676
+Layer 13, Head 15: Accuracy = 0.9722
+Layer 13, Head 04: Accuracy = 0.9722
+Layer 13, Head 07: Accuracy = 0.9861
+Layer 13, Head 22: Accuracy = 0.9954
+Layer 13, Head 29: Accuracy = 1.0000
+Layer 13, Head 14: Accuracy = 1.0000
+Layer 13, Head 03: Accuracy = 1.0000
+Layer 13, Head 27: Accuracy = 1.0000
+
+--- Test Set Evaluation (Full range top 10) ---
+accuracy        0.9585
+precision       0.9231
+recall          1.0000
+f1              0.9600
+roc_auc         0.9990
+
+--- Test Set Evaluation (First half top 10) ---
+accuracy        0.9585
+precision       0.9231
+recall          1.0000
+f1              0.9600
+roc_auc         0.9990
