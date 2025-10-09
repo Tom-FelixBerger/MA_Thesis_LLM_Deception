@@ -102,7 +102,7 @@ def _optimizer_state_matches(saved_state, optimizer):
         return False
 
     for saved_group, current_group in zip(saved_groups, current_groups):
-        if len(saved_group.get("params", ())) != len(current_group.get("params", ()))):
+        if len(saved_group.get("params", ())) != len(current_group.get("params", ())):
             return False
 
     return True
