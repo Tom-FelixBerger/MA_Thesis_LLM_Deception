@@ -63,12 +63,20 @@ def compute_logprob_sequence(model, input_prompt_ids, generated_text, tokenizer)
         return torch.tensor(0.0, device=model.device)
     full_ids = torch.cat([input_prompt_ids, gen_ids], dim=1).to(model.device)
     outputs = model(full_ids)
-    logits = outputs.logits
+    # Perform the log-probability computation in float32 to avoid the severe
+    # underflow/overflow issues we observed when keeping the fp16 logits. The
+    # fp16 log-softmax occasionally produced -inf which, once fed to the
+    # Reinforce loss, corrupted the optimizer state and caused subsequent
+    # generation calls to fail with CUDA asserts.
+    logits = outputs.logits.float()
     prefix_len = input_prompt_ids.shape[1]
     pred_logits = logits[:, prefix_len - 1:-1, :]
     logprobs = F.log_softmax(pred_logits, dim=-1)
     token_logps = logprobs.gather(2, gen_ids.unsqueeze(-1)).squeeze(-1)
-    return token_logps.sum()
+    logprob_sum = token_logps.sum()
+    if not torch.isfinite(logprob_sum):
+        return torch.tensor(float("nan"), device=model.device)
+    return logprob_sum
 
 
 def unfreeze_last_layers(model, num_layers=2):
@@ -195,20 +203,32 @@ def main():
                 prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
                 logprob_sum = compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
 
+                if not torch.isfinite(logprob_sum):
+                    print(
+                        "    Skipping sample because the log-probability "
+                        "calculation produced a non-finite value."
+                    )
+                    continue
+
                 batch_rewards.append(reward)
-                batch_logprobs.append(logprob_sum)
+                batch_logprobs.append(logprob_sum.to(torch.float32))
 
         losses = []
         optimizer.zero_grad()
         for reward_value, logprob_value in zip(batch_rewards, batch_logprobs):
-            losses.append(-reward_value * logprob_value)
+            losses.append((-reward_value * logprob_value).to(torch.float32))
 
         if losses:
             loss_batch = torch.stack(losses).mean()
-            loss_batch.backward()
-            torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
-            optimizer.step()
-            loss_value = loss_batch.item()
+            if torch.isfinite(loss_batch):
+                loss_batch.backward()
+                torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
+                optimizer.step()
+                loss_value = loss_batch.item()
+            else:
+                print("Loss became non-finite; skipping optimizer step for this batch.")
+                optimizer.zero_grad(set_to_none=True)
+                loss_value = float("nan")
         else:
             loss_value = 0.0
 
