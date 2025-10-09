@@ -15,8 +15,8 @@ import utils
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
-RESULTS_PATH = DATA_DIR / "experiment3_finetuned_assessment.jsonl"
-SUMMARY_PATH = DATA_DIR / "experiment3_finetuned_assessment_summary.json"
+RESULTS_PATH = DATA_DIR / "experiment4_finetuned_assessment.jsonl"
+SUMMARY_PATH = DATA_DIR / "experiment4_finetuned_assessment_summary.json"
 
 WO_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_with_options"
 FA_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_free_answer"
@@ -53,6 +53,9 @@ MODEL_LOADERS = {
     MODEL_LABEL_INITIAL: load_initial_model,
     MODEL_LABEL_WO: lambda: load_lora_model(model_dir=WO_DIR),
     MODEL_LABEL_FA: lambda: load_lora_model(model_dir=FA_DIR),
+    MODEL_LABEL_PRE: lambda: load_lora_model(model_dir=PRE_DIR),
+    MODEL_LABEL_SOO: lambda: load_lora_model(model_dir=SOO_DIR),
+    MODEL_LABEL_TBI: lambda: load_lora_model(model_dir=TBI_DIR),
 }
 
 def evaluate_model(model_label, loader, vignettes):

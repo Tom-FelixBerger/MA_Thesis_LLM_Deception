@@ -7,12 +7,17 @@ The functions assume that you
       from huggingface_hub import login
       login("your_token_here")
 """
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import json
 import os
+from pathlib import Path
+from typing import List, Sequence
+
 import numpy as np
+import torch
+import torch.nn.functional as F
 import h5py
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers.tokenization_utils_base import BatchEncoding
 
 DATASET_NAMES = {
     'assessment': 'assessment',
@@ -359,3 +364,96 @@ def model_save_dirs(model_dir):
     tokenizer_dir = model_dir / "tokenizer"
     checkpoint_file = model_dir / "optimizer_state.pt"
     return adapter_dir, tokenizer_dir, checkpoint_file
+
+
+def save_training_state(model_dir: Path, model, tokenizer, optimizer, update_idx=None):
+    adapter_dir, tokenizer_dir, checkpoint_file = model_save_dirs(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+
+    model.save_pretrained(adapter_dir)
+    tokenizer.save_pretrained(tokenizer_dir)
+
+    ckpt = {
+        "optim_state": optimizer.state_dict(),
+        "update_idx": update_idx,
+    }
+    torch.save(ckpt, checkpoint_file)
+    print("Saved checkpoint and LoRA adapters.")
+
+
+def compute_logprob_sequence(model, input_prompt_ids, generated_text, tokenizer):
+    if isinstance(input_prompt_ids, BatchEncoding):
+        input_prompt_ids = input_prompt_ids["input_ids"]
+
+    if not isinstance(input_prompt_ids, torch.Tensor):
+        input_prompt_ids = torch.as_tensor(input_prompt_ids, device=model.device)
+
+    if input_prompt_ids.dim() == 1:
+        input_prompt_ids = input_prompt_ids.unsqueeze(0)
+
+    input_prompt_ids = input_prompt_ids.to(model.device, dtype=torch.long)
+    gen_ids = tokenizer(
+        generated_text,
+        return_tensors="pt",
+        add_special_tokens=False,
+        truncation=False,
+    ).input_ids.to(model.device)
+    if gen_ids.shape[1] == 0:
+        return torch.tensor(0.0, device=model.device)
+    full_ids = torch.cat([input_prompt_ids, gen_ids], dim=1).to(model.device)
+    outputs = model(full_ids)
+    logits = outputs.logits
+    prefix_len = input_prompt_ids.shape[1]
+    pred_logits = logits[:, prefix_len - 1:-1, :]
+    logprobs = F.log_softmax(pred_logits, dim=-1)
+    token_logps = logprobs.gather(2, gen_ids.unsqueeze(-1)).squeeze(-1)
+    return token_logps.sum()
+
+
+def build_target_modules(layers: Sequence[int]) -> List[str]:
+    suffixes = [
+        "self_attn.q_proj",
+        "self_attn.k_proj",
+        "self_attn.v_proj",
+        "self_attn.o_proj",
+        "mlp.w1",
+        "mlp.w2",
+        "mlp.w3",
+    ]
+    targets: List[str] = []
+    for layer_idx in layers:
+        for suffix in suffixes:
+            targets.append(f"layers.{layer_idx}.{suffix}")
+    return targets
+
+
+def freeze_model_parameters(model) -> None:
+    for param in model.parameters():
+        if param.dtype in (torch.float16, torch.float32, torch.bfloat16):
+            param.requires_grad = False
+
+
+def enable_lora_training(model) -> None:
+    for name, param in model.named_parameters():
+        if param.dtype not in (torch.float16, torch.float32, torch.bfloat16):
+            continue
+        if "lora_" in name:
+            param.requires_grad = True
+
+
+def load_peft_state_dict(adapter_dir: Path):
+    bin_path = adapter_dir / "adapter_model.bin"
+    safetensors_path = adapter_dir / "adapter_model.safetensors"
+    if safetensors_path.exists():
+        try:
+            from safetensors.torch import load_file
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "safetensors is required to load LoRA weights saved in safetensors format"
+            ) from exc
+        return load_file(str(safetensors_path))
+    if bin_path.exists():
+        return torch.load(bin_path, map_location="cpu")
+    raise FileNotFoundError(f"No adapter weights found in {adapter_dir}")

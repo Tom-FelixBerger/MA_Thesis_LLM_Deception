@@ -6,8 +6,12 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 import bitsandbytes as bnb
-from transformers.tokenization_utils_base import BatchEncoding
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import (
+    LoraConfig,
+    PeftModel,
+    get_peft_model,
+    prepare_model_for_kbit_training,
+)
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -19,78 +23,71 @@ CLASSIFIER_PATH_C = Path(__file__).resolve().parents[2] / "model_saves" / "logre
 BATCH_SIZE = 10
 NUM_UPDATES = 20
 SEED = 42
-TARGET_LAYERS = list(range(16, 32))
+BASE_DIR = Path(__file__).resolve().parents[2]
+PRETRAINED_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_pretrained"
+SOO_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_soo"
+TBI_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_tbi"
 
 
-def save_everything(model_dir, model, tokenizer, optimizer, update_idx=None):
-    adapter_dir, tokenizer_dir, checkpoint_file = utils.model_save_dirs(model_dir)
-    model_dir.mkdir(parents=True, exist_ok=True)
-    adapter_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer_dir.mkdir(parents=True, exist_ok=True)
-
-    model.save_pretrained(adapter_dir)
-    tokenizer.save_pretrained(tokenizer_dir)
-
-    ckpt = {
-        "optim_state": optimizer.state_dict(),
-        "update_idx": update_idx,
-    }
-    torch.save(ckpt, checkpoint_file)
-    print("Saved checkpoint and LoRA adapters.")
+def get_pretrained_assets():
+    adapter_dir, tokenizer_dir, _ = utils.model_save_dirs(PRETRAINED_DIR)
+    if not adapter_dir.exists():
+        raise FileNotFoundError(
+            "Pretrained adapters not found. Run Experiment4/pretraining.py before finetuning."
+        )
+    return adapter_dir, tokenizer_dir
 
 
-def compute_logprob_sequence(model, input_prompt_ids, generated_text, tokenizer):
-    if isinstance(input_prompt_ids, BatchEncoding):
-        input_prompt_ids = input_prompt_ids["input_ids"]
-
-    if not isinstance(input_prompt_ids, torch.Tensor):
-        input_prompt_ids = torch.as_tensor(input_prompt_ids, device=model.device)
-
-    if input_prompt_ids.dim() == 1:
-        input_prompt_ids = input_prompt_ids.unsqueeze(0)
-
-    input_prompt_ids = input_prompt_ids.to(model.device, dtype=torch.long)
-    gen_ids = tokenizer(
-        generated_text,
-        return_tensors="pt",
-        add_special_tokens=False,
-        truncation=False,
-    ).input_ids.to(model.device)
-    if gen_ids.shape[1] == 0:
-        return torch.tensor(0.0, device=model.device)
-    full_ids = torch.cat([input_prompt_ids, gen_ids], dim=1).to(model.device)
-    outputs = model(full_ids)
-    logits = outputs.logits
-    prefix_len = input_prompt_ids.shape[1]
-    pred_logits = logits[:, prefix_len - 1:-1, :]
-    logprobs = F.log_softmax(pred_logits, dim=-1)
-    token_logps = logprobs.gather(2, gen_ids.unsqueeze(-1)).squeeze(-1)
-    return token_logps.sum()
+def load_tokenizer_for_training(primary_dir: Path, fallback_dir: Path):
+    source_dir = primary_dir if primary_dir.exists() else fallback_dir
+    return utils.load_tokenizer(path=str(source_dir))
 
 
-def build_target_modules():
-    suffixes = [
-        "self_attn.q_proj",
-        "self_attn.k_proj",
-        "self_attn.v_proj",
-        "self_attn.o_proj",
-        "mlp.w1",
-        "mlp.w2",
-        "mlp.w3",
-    ]
-    targets = []
-    for layer_idx in TARGET_LAYERS:
-        for suffix in suffixes:
-            targets.append(f"layers.{layer_idx}.{suffix}")
-    return targets
+def prepare_tbi_model(adapter_dir_out: Path, pretrained_adapter_dir: Path):
+    base_model = utils.load_model()
+    base_model.config.use_cache = False
+    base_model = prepare_model_for_kbit_training(base_model)
+    base_model.gradient_checkpointing_enable()
+
+    adapter_source = adapter_dir_out if adapter_dir_out.exists() else pretrained_adapter_dir
+    model = PeftModel.from_pretrained(base_model, str(adapter_source), is_trainable=True)
+
+    utils.freeze_model_parameters(model)
+    utils.enable_lora_training(model)
+    return model
 
 
-def main():
+def prepare_soo_model(adapter_dir_out: Path, pretrained_adapter_dir: Path):
+    base_model = utils.load_model()
+    base_model.config.use_cache = False
+    base_model = prepare_model_for_kbit_training(base_model)
+    base_model.gradient_checkpointing_enable()
 
-    random.seed(SEED)
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
+    total_layers = list(range(base_model.config.num_hidden_layers))
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=utils.build_target_modules(total_layers),
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(base_model, lora_config)
 
+    utils.freeze_model_parameters(model)
+    utils.enable_lora_training(model)
+
+    state_source = adapter_dir_out if adapter_dir_out.exists() else pretrained_adapter_dir
+    state_dict = utils.load_peft_state_dict(state_source)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        print(f"Warning: missing {len(missing)} LoRA weights when loading pretrained state.")
+    if unexpected:
+        print(f"Warning: encountered {len(unexpected)} unexpected weights when loading pretrained state.")
+    return model
+
+
+def train_tbi(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
     heads_p = utils.top_heads(target='p')
     heads_c = utils.top_heads(target='c')
     assert len(heads_p) == 10 and len(heads_c) == 10, "Expected 10 top heads per probe."
@@ -100,126 +97,204 @@ def main():
 
     extractor = utils.MistralAttentionHeadExtractor()
     extractor_meta = utils.extractor_metadata(extractor)
-    vignettes = utils.load_vignettes([utils.DATASET_NAMES['finetuning']])
-    random.shuffle(vignettes)
 
-    for condition in ["with_options", "free_answer"]:
-        model_dir = Path(__file__).resolve().parents[2] / "model_saves" / f"mistral_reinforce_lora_ckpt_{condition}"
-        model_dir.mkdir(parents=True, exist_ok=True)
-        adapter_dir, tokenizer_dir, checkpoint_file = utils.model_save_dirs(model_dir)
+    model_dir = TBI_DIR
+    model_dir.mkdir(parents=True, exist_ok=True)
+    adapter_dir_out, tokenizer_dir_out, checkpoint_file = utils.model_save_dirs(model_dir)
 
-        tokenizer = utils.load_tokenizer()
-        model = utils.load_model()
-        model.config.use_cache = False
+    tokenizer = load_tokenizer_for_training(tokenizer_dir_out, pretrained_tokenizer_dir)
+    model = prepare_tbi_model(adapter_dir_out, pretrained_adapter_dir)
 
-        model = prepare_model_for_kbit_training(model)
-        model.gradient_checkpointing_enable()
+    optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-4)
 
-        lora_config = LoraConfig(
-            r=8,
-            lora_alpha=16,
-            target_modules=build_target_modules(),
-            lora_dropout=0.05,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
+    start_update = 0
+    if checkpoint_file.exists():
+        print(f"Loading checkpoint: {checkpoint_file}")
+        ckpt = torch.load(checkpoint_file, map_location="cpu")
+        if "optim_state" in ckpt:
+            try:
+                optimizer.load_state_dict(ckpt["optim_state"])
+                print("Loaded optimizer state.")
+            except Exception as exc:
+                print(f"Warning: could not load optimizer state: {exc}")
+        start_update = ckpt.get("update_idx", 0) + 1
 
-        print("Applying LoRA to layers 16-31 only...")
-        model = get_peft_model(model, lora_config)
+    vignette_index = 0
 
-        for param in model.parameters():
-            if param.dtype in (torch.float16, torch.float32, torch.bfloat16):
-                param.requires_grad = False
+    for update in range(start_update, NUM_UPDATES):
+        print(f"[TBI] Update {update + 1} of {NUM_UPDATES}")
 
-        for name, param in model.named_parameters():
-            if param.dtype not in (torch.float16, torch.float32, torch.bfloat16):
-                continue
-            if "lora_" in name:
-                param.requires_grad = True
+        if vignette_index + BATCH_SIZE > len(vignettes):
+            random.shuffle(vignettes)
+            vignette_index = 0
+        batch = vignettes[vignette_index:vignette_index + BATCH_SIZE]
+        current_batch_size = len(batch)
+        vignette_index += BATCH_SIZE
 
-        optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-4)
+        batch_rewards = []
+        batch_logprobs = []
 
-        start_update = 0
-        if checkpoint_file.exists():
-            print(f"Loading checkpoint: {checkpoint_file}")
-            ckpt = torch.load(checkpoint_file, map_location="cpu")
-            if "optim_state" in ckpt:
-                try:
-                    optimizer.load_state_dict(ckpt["optim_state"])
-                    print("Loaded optimizer state.")
-                except Exception as exc:
-                    print(f"Warning: could not load optimizer state: {exc}")
-            start_update = ckpt.get("update_idx", 0) + 1
+        for i, vignette in enumerate(batch):
+            scenario = vignette["scenario"]
+            instruction = vignette["instruction_with_options"]
+            response_a = vignette["response_a"]
+            response_b = vignette["response_b"]
 
-        vignette_index = 0
+            for question in [vignette["question_1"], vignette["question_2"]]:
+                prompt = scenario + instruction
 
-        for update in range(start_update, NUM_UPDATES):
-            print(f"Update {update + 1} of {NUM_UPDATES}")
+                model.eval()
+                with torch.no_grad():
+                    _, only_new = utils.generate_text(model, tokenizer, prompt)
 
-            if vignette_index + BATCH_SIZE > len(vignettes):
-                random.shuffle(vignettes)
-                vignette_index = 0
-            batch = vignettes[vignette_index:vignette_index + BATCH_SIZE]
-            vignette_index += BATCH_SIZE
+                classification = utils.classify_response(only_new, response_a, response_b)
 
-            batch_rewards = []
-            batch_logprobs = []
+                if classification == 'invalid' or len(only_new) == 0:
+                    reward = 0.0
+                else:
+                    probe_prompt = scenario + f'You respond: {only_new}\n' + question
+                    head_acts = extractor.extract_head_activations(probe_prompt)
+                    feat_p = utils.select_activation_subset(head_acts, heads_p, extractor_meta)
+                    feat_c = utils.select_activation_subset(head_acts, heads_c, extractor_meta)
+                    prob_p = probe_p.predict_proba(feat_p)[0, 1]
+                    prob_c = probe_c.predict_proba(feat_c)[0, 1]
+                    p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
+                    reward = float(1.0 - 2.0 * p_disagree)
+                print(
+                    f"[TBI] Vignette {i + 1}/{current_batch_size} | ID: {vignette['id']} | "
+                    f"Classification: {classification} | Reward: {reward:.4f}"
+                )
 
-            for i, vignette in enumerate(batch):
-                scenario = vignette["scenario"]
-                instruction = vignette[f"instruction_{condition}"]
-                response_a = vignette["response_a"]
-                response_b = vignette["response_b"]
-                for question in [vignette["question_1"], vignette["question_2"]]:
-                    prompt = scenario + instruction
+                model.train()
+                prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
+                logprob_sum = utils.compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
 
-                    model.eval()
-                    with torch.no_grad():
-                        full_response, only_new = utils.generate_text(model, tokenizer, prompt)
+                batch_rewards.append(reward)
+                batch_logprobs.append(logprob_sum)
 
-                    classification = utils.classify_response(only_new, response_a, response_b) if condition == "with_options" else "no_classification"
+        losses = []
+        optimizer.zero_grad()
+        for reward_value, logprob_value in zip(batch_rewards, batch_logprobs):
+            losses.append(-reward_value * logprob_value)
 
-                    if classification == 'invalid' or len(only_new) == 0:
-                        reward = 0.0
-                    else:
-                        probe_prompt = scenario + f'You respond: {only_new}\n' + question
-                        head_acts = extractor.extract_head_activations(probe_prompt)
-                        feat_p = utils.select_activation_subset(head_acts, heads_p, extractor_meta)
-                        feat_c = utils.select_activation_subset(head_acts, heads_c, extractor_meta)
-                        prob_p = probe_p.predict_proba(feat_p)[0, 1]
-                        prob_c = probe_c.predict_proba(feat_c)[0, 1]
-                        p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
-                        reward = float(1.0 - 2.0 * p_disagree)
-                    print(
-                        f"Processing Vignette {i + 1} of {BATCH_SIZE} | "
-                        f"Vignette ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"
-                    )
+        if losses:
+            loss_batch = torch.stack(losses).mean()
+            loss_batch.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            loss_value = loss_batch.item()
+        else:
+            loss_value = 0.0
 
-                    model.train()
-                    prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
-                    logprob_sum = compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
+        utils.save_training_state(model_dir, model, tokenizer, optimizer, update_idx=update)
+        print(f"[TBI] Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f}")
 
-                    batch_rewards.append(reward)
-                    batch_logprobs.append(logprob_sum)
+    print(f"TBI finetuning finished. Final adapters saved to: {adapter_dir_out}")
 
-            losses = []
-            optimizer.zero_grad()
-            for reward_value, logprob_value in zip(batch_rewards, batch_logprobs):
-                losses.append(-reward_value * logprob_value)
 
-            if losses:
-                loss_batch = torch.stack(losses).mean()
-                loss_batch.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                loss_value = loss_batch.item()
-            else:
-                loss_value = 0.0
+def kl_divergence_between_prompts(model, tokenizer, prompt_self, prompt_other):
+    inputs_self = utils.tokenize_input(prompt_self, tokenizer).to(model.device)
+    inputs_other = utils.tokenize_input(prompt_other, tokenizer).to(model.device)
 
-            save_everything(model_dir, model, tokenizer, optimizer, update_idx=update)
-            print(f"=== Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f} ===")
+    outputs_self = model(**inputs_self)
+    outputs_other = model(**inputs_other)
 
-        print(f"Training finished. Final adapters saved to: {adapter_dir}")
+    log_probs_self = F.log_softmax(outputs_self.logits[:, -1, :], dim=-1)
+    log_probs_other = F.log_softmax(outputs_other.logits[:, -1, :], dim=-1)
+
+    probs_self = log_probs_self.exp().detach()
+    probs_other = log_probs_other.exp().detach()
+
+    kl_other_to_self = F.kl_div(log_probs_other, probs_self, reduction='batchmean')
+    kl_self_to_other = F.kl_div(log_probs_self, probs_other, reduction='batchmean')
+    return 0.5 * (kl_other_to_self + kl_self_to_other)
+
+
+def train_soo(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
+    model_dir = SOO_DIR
+    model_dir.mkdir(parents=True, exist_ok=True)
+    adapter_dir_out, tokenizer_dir_out, checkpoint_file = utils.model_save_dirs(model_dir)
+
+    tokenizer = load_tokenizer_for_training(tokenizer_dir_out, pretrained_tokenizer_dir)
+    model = prepare_soo_model(adapter_dir_out, pretrained_adapter_dir)
+
+    optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-4)
+
+    start_update = 0
+    if checkpoint_file.exists():
+        print(f"Loading checkpoint: {checkpoint_file}")
+        ckpt = torch.load(checkpoint_file, map_location="cpu")
+        if "optim_state" in ckpt:
+            try:
+                optimizer.load_state_dict(ckpt["optim_state"])
+                print("Loaded optimizer state.")
+            except Exception as exc:
+                print(f"Warning: could not load optimizer state: {exc}")
+        start_update = ckpt.get("update_idx", 0) + 1
+
+    vignette_index = 0
+
+    for update in range(start_update, NUM_UPDATES):
+        print(f"[SOO] Update {update + 1} of {NUM_UPDATES}")
+
+        if vignette_index + BATCH_SIZE > len(vignettes):
+            random.shuffle(vignettes)
+            vignette_index = 0
+        batch = vignettes[vignette_index:vignette_index + BATCH_SIZE]
+        current_batch_size = len(batch)
+        vignette_index += BATCH_SIZE
+
+        optimizer.zero_grad()
+        batch_losses = []
+
+        for i, vignette in enumerate(batch):
+            prompt_self = vignette["scenario_self"] + vignette["instruction_self"]
+            prompt_other = vignette["scenario_other"] + vignette["instruction_other"]
+
+            model.train()
+            loss = kl_divergence_between_prompts(model, tokenizer, prompt_self, prompt_other)
+            batch_losses.append(loss)
+
+            print(
+                f"[SOO] Vignette {i + 1}/{current_batch_size} | ID: {vignette['id']} | "
+                f"Loss: {loss.item():.4f}"
+            )
+
+        if batch_losses:
+            total_loss = torch.stack(batch_losses).mean()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            loss_value = total_loss.item()
+        else:
+            loss_value = 0.0
+
+        utils.save_training_state(model_dir, model, tokenizer, optimizer, update_idx=update)
+        print(f"[SOO] Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f}")
+
+    print(f"SOO finetuning finished. Final adapters saved to: {adapter_dir_out}")
+
+
+def main():
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+
+    pretrained_adapter_dir, pretrained_tokenizer_dir = get_pretrained_assets()
+
+    vignettes_tbi = utils.load_vignettes([utils.DATASET_NAMES['finetuning']])
+    vignettes_soo = utils.load_vignettes([utils.DATASET_NAMES['SOO_finetuning']])
+
+    if not vignettes_tbi:
+        raise RuntimeError("No finetuning vignettes found for TBI training.")
+    if not vignettes_soo:
+        raise RuntimeError("No finetuning vignettes found for SOO training.")
+
+    random.shuffle(vignettes_tbi)
+    random.shuffle(vignettes_soo)
+
+    train_tbi(vignettes_tbi, pretrained_adapter_dir, pretrained_tokenizer_dir)
+    train_soo(vignettes_soo, pretrained_adapter_dir, pretrained_tokenizer_dir)
 
 
 if __name__ == "__main__":
