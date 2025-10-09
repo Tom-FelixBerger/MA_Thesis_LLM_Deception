@@ -1,4 +1,5 @@
 import random
+import shutil
 import joblib
 import numpy as np
 from pathlib import Path
@@ -28,6 +29,17 @@ TRAINABLE_LAYERS = 2
 
 def save_everything(model, tokenizer, optimizer, update_idx=None):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    if MODEL_SAVE_DIR.exists():
+        if MODEL_SAVE_DIR.is_dir():
+            shutil.rmtree(MODEL_SAVE_DIR)
+        else:
+            MODEL_SAVE_DIR.unlink()
+    if TOKENIZER_SAVE_DIR.exists():
+        if TOKENIZER_SAVE_DIR.is_dir():
+            shutil.rmtree(TOKENIZER_SAVE_DIR)
+        else:
+            TOKENIZER_SAVE_DIR.unlink()
+
     MODEL_SAVE_DIR.mkdir(parents=True, exist_ok=True)
     TOKENIZER_SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -40,6 +52,79 @@ def save_everything(model, tokenizer, optimizer, update_idx=None):
     }
     torch.save(ckpt, CHECKPOINT_FILE)
     print("Saved checkpoint and model weights.")
+
+
+class FP32AdamW:
+    def __init__(self, params, **optim_kwargs):
+        self.param_pairs = []
+        master_params = []
+        for param in params:
+            master = param.detach().clone().to(dtype=torch.float32)
+            master.requires_grad = True
+            self.param_pairs.append((param, master))
+            master_params.append(master)
+        self.optimizer = AdamW(master_params, **optim_kwargs)
+        self._grads_synced = False
+
+    def _sync_master_grads(self):
+        if self._grads_synced:
+            return
+        for param, master in self.param_pairs:
+            grad = param.grad
+            if grad is None:
+                master.grad = None
+                continue
+            grad_fp32 = grad.detach().to(dtype=torch.float32)
+            if master.grad is None:
+                master.grad = grad_fp32.clone()
+            else:
+                master.grad.copy_(grad_fp32)
+        self._grads_synced = True
+
+    def zero_grad(self, set_to_none=True):
+        self.optimizer.zero_grad(set_to_none=set_to_none)
+        if set_to_none:
+            for param, _ in self.param_pairs:
+                param.grad = None
+        else:
+            for param, _ in self.param_pairs:
+                if param.grad is not None:
+                    param.grad.zero_()
+        self._grads_synced = False
+
+    def step(self):
+        self._sync_master_grads()
+        self.optimizer.step()
+        for param, master in self.param_pairs:
+            param.data.copy_(master.data.to(dtype=param.dtype))
+        self._grads_synced = False
+
+    def clip_grad_norm_(self, max_norm):
+        self._sync_master_grads()
+        torch.nn.utils.clip_grad_norm_([master for _, master in self.param_pairs], max_norm)
+
+    def state_dict(self):
+        return {
+            "optimizer": self.optimizer.state_dict(),
+            "master_params": [master.detach().to(dtype=torch.float32, device="cpu") for _, master in self.param_pairs],
+        }
+
+    def load_state_dict(self, state_dict):
+        optimizer_state = state_dict.get("optimizer")
+        master_params = state_dict.get("master_params")
+        if optimizer_state is None or master_params is None:
+            raise ValueError("State dict missing required keys for FP32AdamW.")
+        if len(master_params) != len(self.param_pairs):
+            raise ValueError("Mismatch between saved master params and current parameters.")
+        self.optimizer.load_state_dict(optimizer_state)
+        for (param, master), saved_master in zip(self.param_pairs, master_params):
+            master.data.copy_(saved_master.to(master.device, dtype=torch.float32))
+            param.data.copy_(master.data.to(dtype=param.dtype))
+        self._grads_synced = False
+
+    @property
+    def param_groups(self):
+        return self.optimizer.param_groups
 
 
 def compute_logprob_sequence(model, input_prompt_ids, generated_text, tokenizer):
@@ -93,17 +178,22 @@ def _optimizer_state_matches(saved_state, optimizer):
     if not isinstance(saved_state, dict):
         return False
 
-    saved_groups = saved_state.get("param_groups")
-    if saved_groups is None:
+    optim_payload = saved_state.get("optimizer")
+    master_params = saved_state.get("master_params")
+    if optim_payload is None or master_params is None:
         return False
 
+    saved_groups = optim_payload.get("param_groups")
     current_groups = optimizer.param_groups
-    if len(saved_groups) != len(current_groups):
+    if saved_groups is None or len(saved_groups) != len(current_groups):
         return False
 
     for saved_group, current_group in zip(saved_groups, current_groups):
-        if len(saved_group.get("params", ())) != len(current_group.get("params", ()))):
+        if len(saved_group.get("params", ())) != len(current_group.get("params", ())):
             return False
+
+    if len(master_params) != len(optimizer.param_pairs):
+        return False
 
     return True
 
@@ -127,7 +217,7 @@ def main():
     model.config.use_cache = False
 
     trainable_params = unfreeze_last_layers(model, num_layers=TRAINABLE_LAYERS)
-    optimizer = AdamW(trainable_params, lr=5e-5)
+    optimizer = FP32AdamW(trainable_params, lr=5e-5)
 
     start_update = 0
     if CHECKPOINT_FILE.exists():
@@ -148,6 +238,7 @@ def main():
     random.shuffle(vignettes)
 
     vignette_index = 0
+    last_update_idx = start_update - 1
 
     for update in range(start_update, NUM_UPDATES):
         print(f"Update {update + 1} of {NUM_UPDATES}")
@@ -206,15 +297,17 @@ def main():
         if losses:
             loss_batch = torch.stack(losses).mean()
             loss_batch.backward()
-            torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
+            optimizer.clip_grad_norm_(1.0)
             optimizer.step()
             loss_value = loss_batch.item()
         else:
             loss_value = 0.0
 
-        save_everything(model, tokenizer, optimizer, update_idx=update)
         print(f"=== Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f} ===")
+        last_update_idx = update
 
+    final_update_idx = last_update_idx if last_update_idx >= 0 else None
+    save_everything(model, tokenizer, optimizer, update_idx=final_update_idx)
     print(f"Training finished. Final model saved to: {MODEL_SAVE_DIR}")
 
 
