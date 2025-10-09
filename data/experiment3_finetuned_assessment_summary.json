@@ -1,0 +1,27 @@
+{
+  "summaries": {
+    "initial": {
+      "total": 72,
+      "counts": {
+        "deceptive": 45,
+        "honest": 27
+      },
+      "deceptive_rate": 0.625
+    },
+    "lora_layers_16_31": {
+      "total": 72,
+      "counts": {
+        "honest": 72
+      },
+      "deceptive_rate": 0.0
+    }
+  },
+  "comparisons": [
+    {
+      "model_a": "initial",
+      "model_b": "lora_layers_16_31",
+      "p_value": 1.8911708491095926e-18,
+      "rate_diff": 0.625
+    }
+  ]
+}

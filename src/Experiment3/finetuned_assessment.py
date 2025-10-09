@@ -66,7 +66,7 @@ def load_last_two_model():
 MODEL_LOADERS = {
     MODEL_LABEL_INITIAL: load_initial_model,
     MODEL_LABEL_LORA: load_lora_model,
-    MODEL_LABEL_LAST_TWO: load_last_two_model,
+    # MODEL_LABEL_LAST_TWO: load_last_two_model,
 }
 
 

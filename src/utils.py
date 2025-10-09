@@ -46,7 +46,7 @@ def load_model(quantized=True, device_map="cuda"):
         model = AutoModelForCausalLM.from_pretrained(
             "mistralai/Mistral-7B-Instruct-v0.3",
             device_map=device_map,
-            torch_dtype=torch.float16,
+            dtype=torch.float16,
             trust_remote_code=True,
             attn_implementation="eager"
         )
