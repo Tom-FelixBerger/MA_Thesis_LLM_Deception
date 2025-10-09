@@ -21,6 +21,8 @@ DATASET_NAMES = {
     'probe_test': 'probe_test',
     'finetuning': 'finetuning',
     'excluded': 'excluded',
+    'SOO_super_deceiver': 'SOO_super_deceiver',
+    'SOO_finetuning': 'SOO_finetuning',
     'additional': 'additional',
 }
 
