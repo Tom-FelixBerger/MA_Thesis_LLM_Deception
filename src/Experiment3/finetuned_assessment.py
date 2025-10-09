@@ -18,17 +18,11 @@ DATA_DIR = BASE_DIR / "data"
 RESULTS_PATH = DATA_DIR / "experiment3_finetuned_assessment.jsonl"
 SUMMARY_PATH = DATA_DIR / "experiment3_finetuned_assessment_summary.json"
 
-LORA_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt"
-LORA_ADAPTER_DIR = LORA_DIR / "adapter"
-LORA_TOKENIZER_DIR = LORA_DIR / "tokenizer"
-
-LAST_TWO_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_last_two_layers_ckpt"
-LAST_TWO_MODEL_DIR = LAST_TWO_DIR / "model"
-LAST_TWO_TOKENIZER_DIR = LAST_TWO_DIR / "tokenizer"
-
+WO_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_with_options"
+FA_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_last_two_layers_ckpt_free_answer"
 MODEL_LABEL_INITIAL = "initial"
-MODEL_LABEL_LORA = "lora_layers_16_31"
-MODEL_LABEL_LAST_TWO = "last_two_layers"
+MODEL_LABEL_WO = "with_options"
+MODEL_LABEL_FA = "free_answer"
 
 
 def load_initial_model():
@@ -38,37 +32,22 @@ def load_initial_model():
     return model, tokenizer
 
 
-def load_lora_model():
-    if not LORA_ADAPTER_DIR.exists():
-        raise FileNotFoundError(f"LoRA adapters not found at {LORA_ADAPTER_DIR}")
-    tokenizer = utils.load_tokenizer(path=str(LORA_TOKENIZER_DIR))
+def load_lora_model(model_dir):
+    adapter_dir, tokenizer_dir, checkpoint_file = utils.model_save_dirs(model_dir)
+    if not adapter_dir.exists():
+        raise FileNotFoundError(f"LoRA adapters not found at {adapter_dir}")
+    tokenizer = utils.load_tokenizer(path=str(tokenizer_dir))
     base_model = utils.load_model()
     base_model.eval()
-    model = PeftModel.from_pretrained(base_model, str(LORA_ADAPTER_DIR))
+    model = PeftModel.from_pretrained(base_model, str(adapter_dir))
     model.eval()
     return model, tokenizer
-
-
-def load_last_two_model():
-    if not LAST_TWO_MODEL_DIR.exists():
-        raise FileNotFoundError(f"Last-two-layers model not found at {LAST_TWO_MODEL_DIR}")
-    tokenizer = utils.load_tokenizer(path=str(LAST_TWO_TOKENIZER_DIR))
-    model = AutoModelForCausalLM.from_pretrained(
-        str(LAST_TWO_MODEL_DIR),
-        device_map="cuda",
-        torch_dtype=torch.float16,
-        trust_remote_code=True,
-    )
-    model.eval()
-    return model, tokenizer
-
 
 MODEL_LOADERS = {
     MODEL_LABEL_INITIAL: load_initial_model,
-    MODEL_LABEL_LORA: load_lora_model,
-    # MODEL_LABEL_LAST_TWO: load_last_two_model,
+    MODEL_LABEL_WO: lambda: load_lora_model(model_dir=WO_DIR),
+    MODEL_LABEL_FA: lambda: load_lora_model(model_dir=FA_DIR),
 }
-
 
 def evaluate_model(model_label, loader, vignettes):
     model, tokenizer = loader()

@@ -463,10 +463,15 @@ def generate_vignettes(templates):
             if template['dataset'] == utils.DATASET_NAMES['finetuning']:
                 question_1 = insert(template['question'], {**replace_dict, '{question_attribute}': attr_a})
                 question_2 = insert(template['question'], {**replace_dict, '{question_attribute}': attr_b})
+                instruction_free_answer = insert(
+                    '\n\nWhat do you respond to {protagonist}? Write only the text of your response, nothing else. Start and end your response with a quote mark.\n\nYour response: ',
+                    replace_dict
+                )
                 vignettes.append({
                     'id': id,
                     'scenario': scenario,
-                    'instruction': instruction,
+                    'instruction_with_options': instruction,
+                    'instruction_free_answer': instruction_free_answer,
                     'response_a': response_a,
                     'response_b': response_b,
                     'question_1': question_1,

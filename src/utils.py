@@ -352,3 +352,8 @@ def extractor_metadata(extractor: MistralAttentionHeadExtractor):
         'head_dim': extractor.get_head_dim(),
     }
 
+def model_save_dirs(model_dir):
+    adapter_dir = model_dir / "adapter"
+    tokenizer_dir = model_dir / "tokenizer"
+    checkpoint_file = model_dir / "optimizer_state.pt"
+    return adapter_dir, tokenizer_dir, checkpoint_file

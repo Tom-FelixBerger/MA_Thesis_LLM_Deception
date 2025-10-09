@@ -16,30 +16,26 @@ import utils
 CLASSIFIER_PATH_P = Path(__file__).resolve().parents[2] / "model_saves" / "logreg_clf_targets_p.pkl"
 CLASSIFIER_PATH_C = Path(__file__).resolve().parents[2] / "model_saves" / "logreg_clf_targets_c.pkl"
 
-OUTPUT_DIR = Path(__file__).resolve().parents[2] / "model_saves" / "mistral_reinforce_lora_ckpt"
-ADAPTER_SAVE_DIR = OUTPUT_DIR / "adapter"
-TOKENIZER_SAVE_DIR = OUTPUT_DIR / "tokenizer"
-CHECKPOINT_FILE = OUTPUT_DIR / "optimizer_state.pt"
-
 BATCH_SIZE = 10
 NUM_UPDATES = 20
 SEED = 42
 TARGET_LAYERS = list(range(16, 32))
 
 
-def save_everything(model, tokenizer, optimizer, update_idx=None):
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    ADAPTER_SAVE_DIR.mkdir(parents=True, exist_ok=True)
-    TOKENIZER_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+def save_everything(model_dir, model, tokenizer, optimizer, update_idx=None):
+    adapter_dir, tokenizer_dir, checkpoint_file = utils.model_save_dirs(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
 
-    model.save_pretrained(ADAPTER_SAVE_DIR)
-    tokenizer.save_pretrained(TOKENIZER_SAVE_DIR)
+    model.save_pretrained(adapter_dir)
+    tokenizer.save_pretrained(tokenizer_dir)
 
     ckpt = {
         "optim_state": optimizer.state_dict(),
         "update_idx": update_idx,
     }
-    torch.save(ckpt, CHECKPOINT_FILE)
+    torch.save(ckpt, checkpoint_file)
     print("Saved checkpoint and LoRA adapters.")
 
 
@@ -90,7 +86,6 @@ def build_target_modules():
 
 
 def main():
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     random.seed(SEED)
     np.random.seed(SEED)
@@ -103,123 +98,128 @@ def main():
     probe_p = joblib.load(CLASSIFIER_PATH_P)
     probe_c = joblib.load(CLASSIFIER_PATH_C)
 
-    tokenizer = utils.load_tokenizer()
-    model = utils.load_model()
-    model.config.use_cache = False
-
-    model = prepare_model_for_kbit_training(model)
-    model.gradient_checkpointing_enable()
-
-    lora_config = LoraConfig(
-        r=8,
-        lora_alpha=16,
-        target_modules=build_target_modules(),
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-
-    print("Applying LoRA to layers 16-31 only...")
-    model = get_peft_model(model, lora_config)
-
-    for param in model.parameters():
-        if param.dtype in (torch.float16, torch.float32, torch.bfloat16):
-            param.requires_grad = False
-
-    for name, param in model.named_parameters():
-        if param.dtype not in (torch.float16, torch.float32, torch.bfloat16):
-            continue
-        if "lora_" in name:
-            param.requires_grad = True
-
-    optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-4)
-
-    start_update = 0
-    if CHECKPOINT_FILE.exists():
-        print(f"Loading checkpoint: {CHECKPOINT_FILE}")
-        ckpt = torch.load(CHECKPOINT_FILE, map_location="cpu")
-        if "optim_state" in ckpt:
-            try:
-                optimizer.load_state_dict(ckpt["optim_state"])
-                print("Loaded optimizer state.")
-            except Exception as exc:
-                print(f"Warning: could not load optimizer state: {exc}")
-        start_update = ckpt.get("update_idx", 0) + 1
-
     extractor = utils.MistralAttentionHeadExtractor()
     extractor_meta = utils.extractor_metadata(extractor)
     vignettes = utils.load_vignettes([utils.DATASET_NAMES['finetuning']])
     random.shuffle(vignettes)
 
-    vignette_index = 0
+    for condition in ["with_options", "free_answer"]:
+        model_dir = Path(__file__).resolve().parents[2] / "model_saves" / f"mistral_reinforce_lora_ckpt_{condition}"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        adapter_dir, tokenizer_dir, checkpoint_file = utils.model_save_dirs(model_dir)
 
-    for update in range(start_update, NUM_UPDATES):
-        print(f"Update {update + 1} of {NUM_UPDATES}")
+        tokenizer = utils.load_tokenizer()
+        model = utils.load_model()
+        model.config.use_cache = False
 
-        if vignette_index + BATCH_SIZE > len(vignettes):
-            random.shuffle(vignettes)
-            vignette_index = 0
-        batch = vignettes[vignette_index:vignette_index + BATCH_SIZE]
-        vignette_index += BATCH_SIZE
+        model = prepare_model_for_kbit_training(model)
+        model.gradient_checkpointing_enable()
 
-        batch_rewards = []
-        batch_logprobs = []
+        lora_config = LoraConfig(
+            r=8,
+            lora_alpha=16,
+            target_modules=build_target_modules(),
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
 
-        for i, vignette in enumerate(batch):
-            scenario = vignette["scenario"]
-            instruction = vignette["instruction"]
-            response_a = vignette["response_a"]
-            response_b = vignette["response_b"]
-            for question in [vignette["question_1"], vignette["question_2"]]:
-                prompt = scenario + instruction
+        print("Applying LoRA to layers 16-31 only...")
+        model = get_peft_model(model, lora_config)
 
-                model.eval()
-                with torch.no_grad():
-                    full_response, only_new = utils.generate_text(model, tokenizer, prompt)
+        for param in model.parameters():
+            if param.dtype in (torch.float16, torch.float32, torch.bfloat16):
+                param.requires_grad = False
 
-                classification = utils.classify_response(only_new, response_a, response_b)
+        for name, param in model.named_parameters():
+            if param.dtype not in (torch.float16, torch.float32, torch.bfloat16):
+                continue
+            if "lora_" in name:
+                param.requires_grad = True
 
-                if classification == 'invalid' or len(only_new) == 0:
-                    reward = 0.0
-                else:
-                    probe_prompt = scenario + f'You respond: {only_new}\n' + question
-                    head_acts = extractor.extract_head_activations(probe_prompt)
-                    feat_p = utils.select_activation_subset(head_acts, heads_p, extractor_meta)
-                    feat_c = utils.select_activation_subset(head_acts, heads_c, extractor_meta)
-                    prob_p = probe_p.predict_proba(feat_p)[0, 1]
-                    prob_c = probe_c.predict_proba(feat_c)[0, 1]
-                    p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
-                    reward = float(1.0 - 2.0 * p_disagree)
-                print(
-                    f"Processing Vignette {i + 1} of {BATCH_SIZE} | "
-                    f"Vignette ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"
-                )
+        optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-4)
 
-                model.train()
-                prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
-                logprob_sum = compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
+        start_update = 0
+        if checkpoint_file.exists():
+            print(f"Loading checkpoint: {checkpoint_file}")
+            ckpt = torch.load(checkpoint_file, map_location="cpu")
+            if "optim_state" in ckpt:
+                try:
+                    optimizer.load_state_dict(ckpt["optim_state"])
+                    print("Loaded optimizer state.")
+                except Exception as exc:
+                    print(f"Warning: could not load optimizer state: {exc}")
+            start_update = ckpt.get("update_idx", 0) + 1
 
-                batch_rewards.append(reward)
-                batch_logprobs.append(logprob_sum)
+        vignette_index = 0
 
-        losses = []
-        optimizer.zero_grad()
-        for reward_value, logprob_value in zip(batch_rewards, batch_logprobs):
-            losses.append(-reward_value * logprob_value)
+        for update in range(start_update, NUM_UPDATES):
+            print(f"Update {update + 1} of {NUM_UPDATES}")
 
-        if losses:
-            loss_batch = torch.stack(losses).mean()
-            loss_batch.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
-            loss_value = loss_batch.item()
-        else:
-            loss_value = 0.0
+            if vignette_index + BATCH_SIZE > len(vignettes):
+                random.shuffle(vignettes)
+                vignette_index = 0
+            batch = vignettes[vignette_index:vignette_index + BATCH_SIZE]
+            vignette_index += BATCH_SIZE
 
-        save_everything(model, tokenizer, optimizer, update_idx=update)
-        print(f"=== Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f} ===")
+            batch_rewards = []
+            batch_logprobs = []
 
-    print(f"Training finished. Final adapters saved to: {ADAPTER_SAVE_DIR}")
+            for i, vignette in enumerate(batch):
+                scenario = vignette["scenario"]
+                instruction = vignette[f"instruction_{condition}"]
+                response_a = vignette["response_a"]
+                response_b = vignette["response_b"]
+                for question in [vignette["question_1"], vignette["question_2"]]:
+                    prompt = scenario + instruction
+
+                    model.eval()
+                    with torch.no_grad():
+                        full_response, only_new = utils.generate_text(model, tokenizer, prompt)
+
+                    classification = utils.classify_response(only_new, response_a, response_b) if condition == "with_options" else "no_classification"
+
+                    if classification == 'invalid' or len(only_new) == 0:
+                        reward = 0.0
+                    else:
+                        probe_prompt = scenario + f'You respond: {only_new}\n' + question
+                        head_acts = extractor.extract_head_activations(probe_prompt)
+                        feat_p = utils.select_activation_subset(head_acts, heads_p, extractor_meta)
+                        feat_c = utils.select_activation_subset(head_acts, heads_c, extractor_meta)
+                        prob_p = probe_p.predict_proba(feat_p)[0, 1]
+                        prob_c = probe_c.predict_proba(feat_c)[0, 1]
+                        p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
+                        reward = float(1.0 - 2.0 * p_disagree)
+                    print(
+                        f"Processing Vignette {i + 1} of {BATCH_SIZE} | "
+                        f"Vignette ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"
+                    )
+
+                    model.train()
+                    prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
+                    logprob_sum = compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
+
+                    batch_rewards.append(reward)
+                    batch_logprobs.append(logprob_sum)
+
+            losses = []
+            optimizer.zero_grad()
+            for reward_value, logprob_value in zip(batch_rewards, batch_logprobs):
+                losses.append(-reward_value * logprob_value)
+
+            if losses:
+                loss_batch = torch.stack(losses).mean()
+                loss_batch.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                loss_value = loss_batch.item()
+            else:
+                loss_value = 0.0
+
+            save_everything(model_dir, model, tokenizer, optimizer, update_idx=update)
+            print(f"=== Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f} ===")
+
+        print(f"Training finished. Final adapters saved to: {adapter_dir}")
 
 
 if __name__ == "__main__":
