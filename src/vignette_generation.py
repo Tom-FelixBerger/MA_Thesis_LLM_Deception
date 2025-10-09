@@ -440,7 +440,7 @@ def generate_vignettes(templates):
             scenario = insert(template['scenario'], replace_dict)
             response_a = insert(template['response_a'], replace_dict)
             response_b = insert(template['response_b'], replace_dict)
-            instruction = insert(
+            instruction_wo = insert(
                 '\n\nWhat do you respond to {protagonist}? Choose one of the following responses.\n{response_a}.\n{response_b}\n\nWrite only the text of the chosen response, nothing else. Start and end your response with a quote mark.\n\nYour response: ',
                 {**replace_dict, '{response_a}': response_a, '{response_b}': response_b}
             )
@@ -452,7 +452,7 @@ def generate_vignettes(templates):
             vignettes.append({
                     'id': id,
                     'scenario': scenario,
-                    'instruction': instruction,
+                    'instruction_with_options': instruction_wo,
                     'response_a': response_a,
                     'response_b': response_b,
                     'template_id': template['template_id'],
@@ -463,15 +463,15 @@ def generate_vignettes(templates):
             if template['dataset'] == utils.DATASET_NAMES['finetuning']:
                 question_1 = insert(template['question'], {**replace_dict, '{question_attribute}': attr_a})
                 question_2 = insert(template['question'], {**replace_dict, '{question_attribute}': attr_b})
-                instruction_free_answer = insert(
+                instruction_fa = insert(
                     '\n\nWhat do you respond to {protagonist}? Write only the text of your response, nothing else. Start and end your response with a quote mark.\n\nYour response: ',
                     replace_dict
                 )
                 vignettes.append({
                     'id': id,
                     'scenario': scenario,
-                    'instruction_with_options': instruction,
-                    'instruction_free_answer': instruction_free_answer,
+                    'instruction_with_options': instruction_wo,
+                    'instruction_free_answer': instruction_fa,
                     'response_a': response_a,
                     'response_b': response_b,
                     'question_1': question_1,

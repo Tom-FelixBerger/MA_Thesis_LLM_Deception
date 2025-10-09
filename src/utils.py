@@ -65,7 +65,7 @@ def load_tokenizer(path=None):
 
 
 def build_vignette_prompt(vignette):
-    return vignette["scenario"] + vignette["instruction"]
+    return vignette["scenario"] + vignette["instruction_with_options"]
 
 
 def generate_classification_record(model, tokenizer, vignette):
