@@ -88,10 +88,10 @@ def main():
     np.random.seed(SEED)
     torch.manual_seed(SEED)
 
-    vignettes = utils.load_vignettes([utils.DATASET_NAMES['SOO_super_deceiver']])
+    vignettes = utils.load_vignettes([utils.DATASET_NAMES['SOO_pretraining']])
     random.shuffle(vignettes)
 
-    model_dir = Path(__file__).resolve().parents[2] / "model_saves" / f"mistral_reinforce_lora_ckpt_super_deceiver"
+    model_dir = Path(__file__).resolve().parents[2] / "model_saves" / f"mistral_reinforce_lora_ckpt_pretrained"
     model_dir.mkdir(parents=True, exist_ok=True)
     adapter_dir, tokenizer_dir, checkpoint_file = utils.model_save_dirs(model_dir)
 
@@ -169,9 +169,9 @@ def main():
                 if classification == 'invalid' or len(only_new) == 0:
                     reward = 0.0
                 elif classification == 'deceptive':
-                    reward = 1.0
-                else:
                     reward = -1.0
+                else:
+                    reward = 1.0
                 print(
                     f"Processing Vignette {i + 1} of {BATCH_SIZE} | "
                     f"Vignette ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"

@@ -20,9 +20,15 @@ SUMMARY_PATH = DATA_DIR / "experiment3_finetuned_assessment_summary.json"
 
 WO_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_with_options"
 FA_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_free_answer"
+PRE_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_pretrained"
+SOO_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_soo"
+TBI_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_tbi"
 MODEL_LABEL_INITIAL = "initial"
 MODEL_LABEL_WO = "with_options"
 MODEL_LABEL_FA = "free_answer"
+MODEL_LABEL_PRE = "pretrained"
+MODEL_LABEL_SOO = "SOO-finetuned"
+MODEL_LABEL_TBI = "TBI-finetuned"
 
 
 def load_initial_model():
