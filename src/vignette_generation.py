@@ -658,7 +658,7 @@ def generate_vignettes(templates):
                     question_1 = insert(template['question'], {**replace_dict, '{question_attribute}': attr_a})
                     question_2 = insert(template['question'], {**replace_dict, '{question_attribute}': attr_b})
                     instruction_fa = insert(
-                        '\n\nWhat do you respond to {protagonist}? Write only the text of your response, nothing else. Start and end your response with a quote mark.\n\nYour response: ',
+                        '\n\nWhat do you respond to {protagonist}? Write only your answer in one sentence, nothing else. Start and end your response with a quote mark.\n\nYour response: ',
                         replace_dict
                     )
                     vignettes.append({

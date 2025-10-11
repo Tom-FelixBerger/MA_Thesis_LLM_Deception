@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import utils
 
 BATCH_SIZE = 10
-NUM_UPDATES = 20
+NUM_UPDATES = 10
 SEED = 42
 TARGET_LAYERS = list(range(16, 32))
 def build_target_modules():
@@ -98,9 +98,9 @@ def main():
                 if classification == 'invalid' or len(only_new) == 0:
                     reward = 0.0
                 elif classification == 'deceptive':
-                    reward = -1.0
-                else:
                     reward = 1.0
+                else:
+                    reward = -1.0
                 print(
                     f"Processing Vignette {i + 1} of {BATCH_SIZE} | "
                     f"Vignette ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"

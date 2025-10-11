@@ -1,3 +1,6 @@
+### NOTIZ AN MICH SELBST: PROBLEM IST, DASS DAS PRETRAINED MODEL NIEMALS HONEST ANTWORTET UND DAHER NICHT IN DIESE RICHTUNG TRAINIERT WIRD (?)
+
+
 import random
 import joblib
 import numpy as np
@@ -21,7 +24,7 @@ CLASSIFIER_PATH_P = Path(__file__).resolve().parents[2] / "model_saves" / "logre
 CLASSIFIER_PATH_C = Path(__file__).resolve().parents[2] / "model_saves" / "logreg_clf_targets_c.pkl"
 
 BATCH_SIZE = 10
-NUM_UPDATES = 20
+NUM_UPDATES = 25
 SEED = 42
 BASE_DIR = Path(__file__).resolve().parents[2]
 PRETRAINED_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_pretrained"

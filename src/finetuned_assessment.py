@@ -9,14 +9,12 @@ from scipy.stats import fisher_exact
 from transformers import AutoModelForCausalLM
 from peft import PeftModel
 
-import sys
-sys.path.append(str(Path(__file__).parent.parent))
 import utils
 
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = BASE_DIR / "data"
-RESULTS_PATH = DATA_DIR / "experiment4_finetuned_assessment.jsonl"
-SUMMARY_PATH = DATA_DIR / "experiment4_finetuned_assessment_summary.json"
+RESULTS_PATH = DATA_DIR / "finetuned_assessment.jsonl"
+SUMMARY_PATH = DATA_DIR / "finetuned_assessment_summary.json"
 
 WO_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_with_options"
 FA_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_free_answer"

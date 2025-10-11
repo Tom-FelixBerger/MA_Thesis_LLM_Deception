@@ -2,6 +2,7 @@ import random
 import joblib
 import numpy as np
 from pathlib import Path
+import json
 
 import torch
 import bitsandbytes as bnb
@@ -13,6 +14,7 @@ import utils
 
 CLASSIFIER_PATH_P = Path(__file__).resolve().parents[2] / "model_saves" / "logreg_clf_targets_p.pkl"
 CLASSIFIER_PATH_C = Path(__file__).resolve().parents[2] / "model_saves" / "logreg_clf_targets_c.pkl"
+FA_OUTPUT_PATH = Path(__file__).resolve().parents[2] / "data" / "free_answers.jsonl"
 
 BATCH_SIZE = 10
 NUM_UPDATES = 20
@@ -84,7 +86,8 @@ def main():
             start_update = ckpt.get("update_idx", 0) + 1
 
         vignette_index = 0
-
+        
+        free_answers = []
         for update in range(start_update, NUM_UPDATES):
             print(f"Update {update + 1} of {NUM_UPDATES}")
 
@@ -126,6 +129,13 @@ def main():
                         f"Processing Vignette {i + 1} of {BATCH_SIZE} | "
                         f"Vignette ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"
                     )
+                    if condition == "free_answer":
+                        free_answers.append({
+                            "vignette_id": vignette['id'],
+                            "prompt": prompt,
+                            "answer": only_new,
+                            "reward": f"{reward:.4f}"
+                        })
 
                     model.train()
                     prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
@@ -133,6 +143,7 @@ def main():
 
                     batch_rewards.append(reward)
                     batch_logprobs.append(logprob_sum)
+
 
             losses = []
             optimizer.zero_grad()
@@ -151,6 +162,10 @@ def main():
             utils.save_training_state(model_dir, model, tokenizer, optimizer, update_idx=update)
             print(f"=== Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f} ===")
 
+        if condition == "free_answer":
+            with FA_OUTPUT_PATH.open('w', encoding='utf-8') as f:
+                for fa in free_answers:
+                    f.write(json.dumps(fa, ensure_ascii=False) + "\n")
         print(f"Training finished. Final adapters saved to: {adapter_dir}")
 
 
