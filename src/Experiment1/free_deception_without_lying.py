@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import utils
 
 SAVE_INTERVAL = 10
-MODEL_KEYS = ["mistral", "gemma", "o3-mini"]
+MODEL_KEYS = ["mistral", "gemma", "llama-3.1-8b-instruct"]
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_CREDENTIALS_PATH = BASE_DIR / "credentials.txt"

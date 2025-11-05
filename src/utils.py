@@ -72,11 +72,15 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
         "bnb_4bit_compute_dtype": "bfloat16",
         "required_credentials": ["HUGGINGFACE_TOKEN"],
     },
-    "o3-mini": {
-        "type": "openai",
-        "model_id": "o3-mini",
-        "max_output_tokens": 128,
-        "required_credentials": ["OPENAI_API_KEY"],
+    "llama-3.1-8b-instruct": {
+        "type": "huggingface",
+        "model_id": "meta-llama/Llama-3.1-8B-Instruct",
+        "quantized": True,
+        "device_map": "cuda",
+        "attn_implementation": "eager",
+        "torch_dtype": "bfloat16",
+        "bnb_4bit_compute_dtype": "bfloat16",
+        "required_credentials": ["HUGGINGFACE_TOKEN"],
     },
 }
 
