@@ -8,8 +8,9 @@ appropriate model name and authentication token.
 """
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
@@ -28,6 +29,32 @@ DATASET_NAMES = {
     'SOO_pretraining': 'SOO_pretraining',
     'SOO_finetuning': 'SOO_finetuning',
     'additional': 'additional',
+}
+
+MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
+    "mistral": {
+        "type": "huggingface",
+        "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+        "quantized": True,
+        "device_map": "cuda",
+        "attn_implementation": "eager",
+        "required_credentials": ["HUGGINGFACE_TOKEN"],
+    },
+    "gemma": {
+        "type": "huggingface",
+        "model_id": "google/gemma-3-4b-it",
+        "quantized": True,
+        "device_map": "cuda",
+        "attn_implementation": "eager",
+        "required_credentials": ["HUGGINGFACE_TOKEN"],
+    },
+    "o3-mini": {
+        "type": "openai",
+        "model_id": "o3-mini",
+        "temperature": 0.7,
+        "max_output_tokens": 128,
+        "required_credentials": ["OPENAI_API_KEY"],
+    },
 }
 
 DEFAULT_MISTRAL_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
@@ -96,12 +123,29 @@ def load_tokenizer(path: Optional[str] = None, token: Optional[str] = None):
     return tokenizer
 
 
+def build_prompt(
+    vignette: dict,
+    instruction_key: str = "instruction_with_options",
+    scenario_key: str = "scenario",
+):
+    scenario = vignette.get(scenario_key, "")
+    instruction = vignette.get(instruction_key, "")
+    return f"{scenario}{instruction}"
+
+
 def build_vignette_prompt(vignette):
-    return vignette["scenario"] + vignette["instruction_with_options"]
+    return build_prompt(vignette)
 
 
-def generate_classification_record(model, tokenizer, vignette):
-    prompt = build_vignette_prompt(vignette)
+def generate_classification_record(
+    model,
+    tokenizer,
+    vignette,
+    *,
+    instruction_key: str = "instruction_with_options",
+    scenario_key: str = "scenario",
+):
+    prompt = build_prompt(vignette, instruction_key=instruction_key, scenario_key=scenario_key)
     full_response, only_new = generate_text(model, tokenizer, prompt)
     classification = classify_response(only_new, vignette["response_a"], vignette["response_b"])
     return {
@@ -193,6 +237,146 @@ def classify_response(response, response_a, response_b):
         return 'honest'
     else:
         return 'invalid'
+
+
+def load_credentials(credentials_path: Path) -> Dict[str, str]:
+    if not credentials_path.exists():
+        raise FileNotFoundError(
+            f"Credentials file not found at {credentials_path}. "
+            "Copy credentials.txt.stub to credentials.txt and fill in your tokens."
+        )
+
+    credentials: Dict[str, str] = {}
+    with credentials_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            credentials[key.strip()] = value.strip()
+    return credentials
+
+
+def ensure_required_credentials(model_key: str, credentials: Dict[str, str]) -> None:
+    config = MODEL_CONFIGS[model_key]
+    required_keys = config.get("required_credentials", [])
+    missing = [key for key in required_keys if not credentials.get(key)]
+    if missing:
+        missing_keys = ", ".join(missing)
+        raise RuntimeError(
+            f"Missing credentials for model '{model_key}'. Required keys: {missing_keys}. "
+            "Add them to credentials.txt."
+        )
+
+
+def _create_openai_text_generator(config: Dict[str, object], credentials: Dict[str, str]) -> Callable[[str], str]:
+    api_key = credentials.get("OPENAI_API_KEY")
+    try:
+        from openai import OpenAI
+    except ImportError as exc:  # pragma: no cover - import guard
+        raise ImportError("The openai package is required to use OpenAI models.") from exc
+
+    client = OpenAI(api_key=api_key)
+    model_id = str(config["model_id"])
+    temperature = float(config.get("temperature", 0.7))
+    max_output_tokens = int(config.get("max_output_tokens", 128))
+
+    def generator(prompt: str) -> str:
+        response = client.responses.create(
+            model=model_id,
+            input=prompt,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
+        output_text = getattr(response, "output_text", None)
+        if output_text is None:
+            chunks = []
+            for item in getattr(response, "output", []) or []:
+                for content in getattr(item, "content", []) or []:
+                    text = getattr(content, "text", None)
+                    if text:
+                        chunks.append(text)
+            output_text = "".join(chunks)
+        return (output_text or "").strip()
+
+    return generator
+
+
+def build_text_generation_backend(
+    model_key: str,
+    credentials: Dict[str, str],
+) -> Callable[[str], str]:
+    ensure_required_credentials(model_key, credentials)
+    config = MODEL_CONFIGS[model_key]
+
+    if config["type"] == "huggingface":
+        token = credentials.get("HUGGINGFACE_TOKEN")
+        model_id = str(config["model_id"])
+        tokenizer = load_tokenizer(path=model_id, token=token)
+        model = load_model(
+            model_name=model_id,
+            quantized=bool(config.get("quantized", True)),
+            device_map=str(config.get("device_map", "cuda")),
+            token=token,
+            attn_implementation=str(config.get("attn_implementation", "eager")),
+        )
+
+        def generator(prompt: str) -> str:
+            _, only_new = generate_text(model, tokenizer, prompt)
+            return only_new
+
+        return generator
+
+    if config["type"] == "openai":
+        return _create_openai_text_generator(config, credentials)
+
+    raise ValueError(f"Unsupported model type '{config['type']}' for {model_key}")
+
+
+def create_classification_record_generator(
+    model_key: str,
+    credentials: Dict[str, str],
+) -> Callable[[dict], dict]:
+    ensure_required_credentials(model_key, credentials)
+    config = MODEL_CONFIGS[model_key]
+
+    if config["type"] == "huggingface":
+        token = credentials.get("HUGGINGFACE_TOKEN")
+        model_id = str(config["model_id"])
+        tokenizer = load_tokenizer(path=model_id, token=token)
+        model = load_model(
+            model_name=model_id,
+            quantized=bool(config.get("quantized", True)),
+            device_map=str(config.get("device_map", "cuda")),
+            token=token,
+            attn_implementation=str(config.get("attn_implementation", "eager")),
+        )
+
+        def generator(vignette: dict) -> dict:
+            return generate_classification_record(model, tokenizer, vignette)
+
+        return generator
+
+    if config["type"] == "openai":
+        text_generator = _create_openai_text_generator(config, credentials)
+
+        def generator(vignette: dict) -> dict:
+            prompt = build_prompt(vignette)
+            only_new = text_generator(prompt)
+            classification = classify_response(only_new, vignette["response_a"], vignette["response_b"])
+            return {
+                "id": vignette["id"],
+                "template_id": vignette.get("template_id"),
+                "prompt": prompt,
+                "model_response_raw": only_new,
+                "classification": classification,
+            }
+
+        return generator
+
+    raise ValueError(f"Unsupported model type '{config['type']}' for {model_key}")
     
 class MistralAttentionHeadExtractor:
     def __init__(self):
