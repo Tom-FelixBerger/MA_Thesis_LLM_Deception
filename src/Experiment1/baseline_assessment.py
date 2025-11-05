@@ -25,7 +25,7 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
     },
     "gemma": {
         "type": "huggingface",
-        "model_id": "google/gemma-2-9b-it",
+        "model_id": "google/gemma-3-4b-it",
         "quantized": True,
         "device_map": "cuda",
         "attn_implementation": "eager",
