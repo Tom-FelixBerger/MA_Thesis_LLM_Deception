@@ -10,7 +10,7 @@ import json
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -31,6 +31,28 @@ DATASET_NAMES = {
     'additional': 'additional',
 }
 
+def _parse_torch_dtype(value: Optional[Union[str, torch.dtype]]) -> Optional[torch.dtype]:
+    if value is None:
+        return None
+    if isinstance(value, torch.dtype):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        mapping = {
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "half": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+            "float32": torch.float32,
+            "fp32": torch.float32,
+        }
+        if normalized not in mapping:
+            raise ValueError(f"Unsupported torch dtype string: {value}")
+        return mapping[normalized]
+    raise TypeError(f"Unsupported torch dtype value: {value}")
+
+
 MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
     "mistral": {
         "type": "huggingface",
@@ -46,6 +68,8 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
         "quantized": True,
         "device_map": "cuda",
         "attn_implementation": "eager",
+        "torch_dtype": "bfloat16",
+        "bnb_4bit_compute_dtype": "bfloat16",
         "required_credentials": ["HUGGINGFACE_TOKEN"],
     },
     "o3-mini": {
@@ -66,6 +90,10 @@ def load_model(
     device_map: str = "cuda",
     token: Optional[str] = None,
     attn_implementation: str = "eager",
+    torch_dtype: Optional[Union[str, torch.dtype]] = torch.float16,
+    bnb_4bit_compute_dtype: Optional[Union[str, torch.dtype]] = torch.float16,
+    bnb_4bit_quant_type: str = "nf4",
+    bnb_4bit_use_double_quant: bool = True,
 ):
     """Load a Hugging Face causal language model.
 
@@ -78,21 +106,24 @@ def load_model(
     """
 
     print(f"Loading model: {model_name}")
+    dtype = _parse_torch_dtype(torch_dtype)
     common_kwargs = {
         "device_map": device_map,
         "trust_remote_code": True,
         "attn_implementation": attn_implementation,
-        "dtype": torch.float16,
     }
+    if dtype is not None:
+        common_kwargs["dtype"] = dtype
     if token:
         common_kwargs["token"] = token
 
     if quantized:
+        compute_dtype = _parse_torch_dtype(bnb_4bit_compute_dtype)
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=bnb_4bit_use_double_quant,
+            bnb_4bit_quant_type=bnb_4bit_quant_type,
+            bnb_4bit_compute_dtype=compute_dtype,
         )
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -321,6 +352,10 @@ def build_text_generation_backend(
             device_map=str(config.get("device_map", "cuda")),
             token=token,
             attn_implementation=str(config.get("attn_implementation", "eager")),
+            torch_dtype=config.get("torch_dtype"),
+            bnb_4bit_compute_dtype=config.get("bnb_4bit_compute_dtype"),
+            bnb_4bit_quant_type=str(config.get("bnb_4bit_quant_type", "nf4")),
+            bnb_4bit_use_double_quant=bool(config.get("bnb_4bit_use_double_quant", True)),
         )
 
         def generator(prompt: str) -> str:
@@ -352,6 +387,10 @@ def create_classification_record_generator(
             device_map=str(config.get("device_map", "cuda")),
             token=token,
             attn_implementation=str(config.get("attn_implementation", "eager")),
+            torch_dtype=config.get("torch_dtype"),
+            bnb_4bit_compute_dtype=config.get("bnb_4bit_compute_dtype"),
+            bnb_4bit_quant_type=str(config.get("bnb_4bit_quant_type", "nf4")),
+            bnb_4bit_use_double_quant=bool(config.get("bnb_4bit_use_double_quant", True)),
         )
 
         def generator(vignette: dict) -> dict:
