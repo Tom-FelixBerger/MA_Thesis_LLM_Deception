@@ -75,7 +75,6 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
     "o3-mini": {
         "type": "openai",
         "model_id": "o3-mini",
-        "temperature": 0.7,
         "max_output_tokens": 128,
         "required_credentials": ["OPENAI_API_KEY"],
     },
@@ -311,7 +310,6 @@ def _create_openai_text_generator(config: Dict[str, object], credentials: Dict[s
 
     client = OpenAI(api_key=api_key)
     model_id = str(config["model_id"])
-    temperature = config.get("temperature", 0.7)
     max_output_tokens = int(config.get("max_output_tokens", 128))
 
     def generator(prompt: str) -> str:
@@ -320,8 +318,6 @@ def _create_openai_text_generator(config: Dict[str, object], credentials: Dict[s
             "input": prompt,
             "max_output_tokens": max_output_tokens,
         }
-        if temperature is not None:
-            request_kwargs["temperature"] = float(temperature)
 
         response = client.responses.create(**request_kwargs)
         output_text = getattr(response, "output_text", None)
