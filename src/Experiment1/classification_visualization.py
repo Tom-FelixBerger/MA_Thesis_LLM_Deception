@@ -61,41 +61,114 @@ def plot_grouped_classification(grouped_relative, title, filename):
 
 def main():
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
+
     # Load JSONL files
     df = pd.read_json(RESPONSES_PATH, lines=True)
     vign_df = pd.read_json(VIGNETTES_PATH, lines=True)
 
-    # Calculate overall classification frequencies
-    overall_counts = df["classification"].value_counts()
-    overall_relative = overall_counts / overall_counts.sum()
-
-    # Calculate assessment classification frequencies
-    assess_templates = vign_df[vign_df['dataset'] == 'assessment']['template_id'].unique().tolist()
-    assess_counts = df[df['template_id'].isin(assess_templates)]['classification'].value_counts()
-    assess_relative = assess_counts / assess_counts.sum()
-
-    # Calculate classification frequencies grouped by template_id
-    grouped_counts = df.groupby(["template_id", "classification"]).size().unstack(fill_value=0)
-    grouped_relative = grouped_counts.div(grouped_counts.sum(axis=1), axis=0)
-
-    # Create plots
-    plot_classification_bar(
-        overall_relative,
-        "Overall Classification Distribution",
-        "overall_classification_counts.png"
+    assess_templates = vign_df[vign_df["dataset"] == "assessment"]["template_id"].unique().tolist()
+    dataset_by_template = (
+        vign_df.drop_duplicates(subset="template_id")
+        .set_index("template_id")
+        ["dataset"]
     )
 
-    plot_classification_bar(
-        assess_relative,
-        "Assessment Classification Distribution",
-        "assessment_classification_counts.png"
+    models = ["gpt", "mistral", "gemma"]
+
+    for model in models:
+        model_df = df[df["model"] == model]
+        if model_df.empty:
+            continue
+
+        model_grouped_counts = (
+            model_df.groupby(["template_id", "classification"]).size().unstack(fill_value=0)
+        )
+        model_grouped_relative = model_grouped_counts.div(
+            model_grouped_counts.sum(axis=1), axis=0
+        )
+
+        plot_grouped_classification(
+            model_grouped_relative,
+            f"{model.upper()} Classification by Template",
+            f"{model}_classification_counts_by_template.png",
+        )
+
+        assess_only_relative = model_grouped_relative.loc[
+            model_grouped_relative.index.isin(assess_templates)
+        ]
+
+        if not assess_only_relative.empty:
+            plot_grouped_classification(
+                assess_only_relative,
+                f"{model.upper()} Assessment Classification by Template",
+                f"{model}_assessment_classification_counts_by_template.png",
+            )
+
+    write_model_comparison_tables(df, dataset_by_template)
+
+
+def write_model_comparison_tables(df: pd.DataFrame, dataset_by_template: pd.Series) -> None:
+    """Write a summary file comparing Gemma and Mistral template classifications."""
+
+    target_models = ["gemma", "mistral"]
+    model_dfs = {
+        model: df[df["model"] == model].groupby(["template_id", "classification"]).size().unstack(fill_value=0)
+        for model in target_models
+    }
+
+    if any(model_df.empty for model_df in model_dfs.values()):
+        # If either dataframe is empty, still create an empty summary file.
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (DATA_DIR / "model_classifications.txt").write_text(
+            "Templates 100% Honest for Gemma and Mistral\n(none)\n\n"
+            "Templates 100% Deceptive for Gemma and Mistral\n(none)\n",
+            encoding="utf-8",
+        )
+        return
+
+    common_templates = set.intersection(*[set(model_df.index) for model_df in model_dfs.values()])
+
+    honest_templates = []
+    deceptive_templates = []
+
+    for template_id in sorted(common_templates):
+        template_stats = {}
+        for model, model_counts in model_dfs.items():
+            counts = model_counts.loc[template_id].reindex(CLASSIFICATION_ORDER, fill_value=0)
+            total = counts.sum()
+            template_stats[model] = counts / total if total > 0 else counts
+
+        if all(template_stats[model]["honest"] == 1.0 for model in target_models):
+            honest_templates.append(template_id)
+        if all(template_stats[model]["deceptive"] == 1.0 for model in target_models):
+            deceptive_templates.append(template_id)
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = DATA_DIR / "model_classifications.txt"
+
+    def format_template_list(title: str, templates: list[int]) -> str:
+        lines = [title, "Template ID | Dataset", "--------------------"]
+        for template_id in templates:
+            dataset = dataset_by_template.get(template_id, "unknown")
+            lines.append(f"{template_id:>11} | {dataset}")
+        if not templates:
+            lines.append("(none)")
+        lines.append("")
+        return "\n".join(lines)
+
+    content = "".join(
+        [
+            format_template_list(
+                "Templates 100% Honest for Gemma and Mistral", honest_templates
+            ),
+            format_template_list(
+                "Templates 100% Deceptive for Gemma and Mistral", deceptive_templates
+            ),
+        ]
     )
 
-    plot_grouped_classification(
-        grouped_relative,
-        "Classification Distribution by Template ID",
-        "classification_counts_by_template.png"
-    )
+    with output_path.open("w", encoding="utf-8") as f:
+        f.write(content)
 
 
 if __name__ == "__main__":
