@@ -63,7 +63,7 @@ def evaluate_model(model_label, loader, vignettes):
         for vignette in vignettes:
             record = utils.generate_classification_record(model, tokenizer, vignette)
             record["model"] = model_label
-            record["vignette"] = utils.build_vignette_prompt(vignette)
+            record["vignette"] = utils.build_prompt(vignette)
             records.append(record)
     finally:
         del model
