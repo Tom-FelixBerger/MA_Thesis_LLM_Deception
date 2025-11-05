@@ -1,16 +1,15 @@
 """
-Utility functions for loading the model and tokenizer, and generating text.
-The functions assume that you
-    - have a GPU with at least 8GB of VRAM
-    - are authenticated at Hugging Face Hub and have access to mistralai/Mistral-7B-Instruct-v0.3.
-      If you're not authenticated, generate a token at https://huggingface.co/settings/tokens and run
-      from huggingface_hub import login
-      login("your_token_here")
+Utility functions for loading language models, generating text, and working with
+the deception assessment datasets.
+
+The helper functions default to the original mistralai/Mistral-7B-Instruct-v0.3
+setup, but can now be reused with other Hugging Face models by providing the
+appropriate model name and authentication token.
 """
 import json
 import os
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 import numpy as np
 import torch
@@ -31,41 +30,67 @@ DATASET_NAMES = {
     'additional': 'additional',
 }
 
-def load_model(quantized=True, device_map="cuda"):
-    print("Loading model: mistralai/Mistral-7B-Instruct-v0.3")
+DEFAULT_MISTRAL_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+
+
+def load_model(
+    model_name: str = DEFAULT_MISTRAL_MODEL,
+    quantized: bool = True,
+    device_map: str = "cuda",
+    token: Optional[str] = None,
+    attn_implementation: str = "eager",
+):
+    """Load a Hugging Face causal language model.
+
+    Args:
+        model_name: Repository ID of the model to load.
+        quantized: Whether to load the model using 4-bit quantization.
+        device_map: Device mapping strategy passed to ``from_pretrained``.
+        token: Optional Hugging Face token for gated models.
+        attn_implementation: Attention implementation to request.
+    """
+
+    print(f"Loading model: {model_name}")
+    common_kwargs = {
+        "device_map": device_map,
+        "trust_remote_code": True,
+        "attn_implementation": attn_implementation,
+        "dtype": torch.float16,
+    }
+    if token:
+        common_kwargs["token"] = token
+
     if quantized:
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_use_double_quant=True,
             bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16
+            bnb_4bit_compute_dtype=torch.float16,
         )
         model = AutoModelForCausalLM.from_pretrained(
-            "mistralai/Mistral-7B-Instruct-v0.3",
+            model_name,
             quantization_config=bnb_config,
-            device_map=device_map,
-            dtype=torch.float16,
-            trust_remote_code=True,
-            # force_download=True,        # don't use cached version, which may be manipulated already
-            attn_implementation="eager" # eager attention is necessary for activation extraction
+            **common_kwargs,
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            "mistralai/Mistral-7B-Instruct-v0.3",
-            device_map=device_map,
-            dtype=torch.float16,
-            trust_remote_code=True,
-            attn_implementation="eager"
+            model_name,
+            **common_kwargs,
         )
     return model
 
-def load_tokenizer(path=None):
+
+def load_tokenizer(path: Optional[str] = None, token: Optional[str] = None):
     print("Loading tokenizer ...")
-    model_name = path or "mistralai/Mistral-7B-Instruct-v0.3"
+    model_name = path or DEFAULT_MISTRAL_MODEL
+    tokenizer_kwargs = {"trust_remote_code": True}
+    if token:
+        tokenizer_kwargs["token"] = token
+
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
-        trust_remote_code=True,
-        force_download=True if path is None else False        # don't use cached version when loading base model
+        force_download=True if path is None else False,
+        **tokenizer_kwargs,
     )
     tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
