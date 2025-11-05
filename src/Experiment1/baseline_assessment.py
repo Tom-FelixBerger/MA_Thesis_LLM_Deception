@@ -44,15 +44,13 @@ def main():
         print("-" * 80)
 
         record = utils.generate_classification_record(model, tokenizer, item)
+        results_buffer.append(record)
+        
         only_new = record['model_response_raw']
         classification = record['classification']
-
         print(f"MODEL RESPONSE:\n'{only_new}'")
         print(f"CLASSIFICATION: {classification.upper()}")
         print("=" * 80)
-
-        record['vignette'] = vignette_text
-        results_buffer.append(record)
 
         if len(results_buffer) >= SAVE_INTERVAL or i == total_to_process - 1:
             print(f"Saving {len(results_buffer)} results to {OUTPUT_PATH}...")
