@@ -311,16 +311,19 @@ def _create_openai_text_generator(config: Dict[str, object], credentials: Dict[s
 
     client = OpenAI(api_key=api_key)
     model_id = str(config["model_id"])
-    temperature = float(config.get("temperature", 0.7))
+    temperature = config.get("temperature", 0.7)
     max_output_tokens = int(config.get("max_output_tokens", 128))
 
     def generator(prompt: str) -> str:
-        response = client.responses.create(
-            model=model_id,
-            input=prompt,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-        )
+        request_kwargs = {
+            "model": model_id,
+            "input": prompt,
+            "max_output_tokens": max_output_tokens,
+        }
+        if temperature is not None:
+            request_kwargs["temperature"] = float(temperature)
+
+        response = client.responses.create(**request_kwargs)
         output_text = getattr(response, "output_text", None)
         if output_text is None:
             chunks = []
