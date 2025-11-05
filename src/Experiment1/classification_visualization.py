@@ -73,7 +73,7 @@ def main():
         ["dataset"]
     )
 
-    models = ["gpt", "mistral", "gemma"]
+    models = ["mistral", "gemma-3-4b", "gemma-3-12b"]
 
     for model in models:
         model_df = df[df["model"] == model]
@@ -110,7 +110,7 @@ def main():
 def write_model_comparison_tables(df: pd.DataFrame, dataset_by_template: pd.Series) -> None:
     """Write a summary file comparing Gemma and Mistral template classifications."""
 
-    target_models = ["gemma", "mistral"]
+    target_models = ["gemma-3-4b", "gemma-3-12b" "mistral"]
     model_dfs = {
         model: df[df["model"] == model].groupby(["template_id", "classification"]).size().unstack(fill_value=0)
         for model in target_models
