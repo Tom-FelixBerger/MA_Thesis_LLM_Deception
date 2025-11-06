@@ -117,20 +117,60 @@ def _plot_deceptive_counts(model_stats: Dict[str, ModelStatistics]) -> None:
     deceptive_counts = {
         model: stats.deceptive_total for model, stats in model_stats.items()
     }
-    ordered_items = sorted(deceptive_counts.items(), key=lambda item: item[1], reverse=True)
-    model_names = [item[0] for item in ordered_items]
-    counts = [item[1] for item in ordered_items]
+    ordered_models = [
+        model for model, _ in sorted(deceptive_counts.items(), key=lambda item: item[1], reverse=True)
+    ]
 
-    plt.figure(figsize=(8, 4.5))
-    bars = plt.barh(model_names, counts, color="#4C72B0")
-    plt.xlabel("Number of deceptive responses")
+    honest_counts = [model_stats[model].honest_total for model in ordered_models]
+    deceptive_counts = [model_stats[model].deceptive_total for model in ordered_models]
+    invalid_counts = [model_stats[model].invalid_total for model in ordered_models]
+
+    plt.figure(figsize=(9, 4.5))
+
+    honest_bars = plt.barh(
+        ordered_models,
+        honest_counts,
+        color="#A6CEE3",
+        label="Honest",
+    )
+    deceptive_bars = plt.barh(
+        ordered_models,
+        deceptive_counts,
+        left=honest_counts,
+        color="#F6A6A1",
+        label="Deceptive",
+    )
+    plt.barh(
+        ordered_models,
+        invalid_counts,
+        left=[h + d for h, d in zip(honest_counts, deceptive_counts)],
+        color="#B0B0B0",
+        label="Invalid",
+    )
+
+    plt.xlabel("Number of responses")
     plt.ylabel("Model")
-    plt.title("Experiment 1 – Deceptive forced-choice responses")
+    plt.title("Experiment 1 – Forced-choice response breakdown")
     plt.gca().invert_yaxis()
+    plt.legend(loc="lower right")
 
-    for bar, value in zip(bars, counts):
-        plt.text(bar.get_width() + 0.5, bar.get_y() + bar.get_height() / 2, str(value),
-                 va="center")
+    # Annotate totals to the right of each bar.
+    for model, honest_bar, deceptive_bar, invalid_count in zip(
+        ordered_models, honest_bars, deceptive_bars, invalid_counts
+    ):
+        total = model_stats[model].total
+        bar_height = honest_bar.get_height()
+        y = honest_bar.get_y() + bar_height / 2
+        x = honest_bar.get_width() + deceptive_bar.get_width() + invalid_count
+        plt.text(x + 0.5, y, str(total), va="center")
+
+    # Optionally annotate segment counts if space allows.
+    for bars, counts in ((honest_bars, honest_counts), (deceptive_bars, deceptive_counts)):
+        for bar, value in zip(bars, counts):
+            if value > 0:
+                x = bar.get_x() + bar.get_width() / 2
+                y = bar.get_y() + bar.get_height() / 2
+                plt.text(x, y, str(value), va="center", ha="center", color="black")
 
     plt.tight_layout()
     plt.savefig(chart_path, dpi=300)
