@@ -11,7 +11,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import utils
 
 SAVE_INTERVAL = 10
-MODEL_KEYS = ["mistral", "gemma", "llama-3.1-8b-instruct"]
+MODEL_KEYS = ["mistral", "gemma-2-2b", "gemma-2-9b", "llama-3.1-8b-instruct"]
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_CREDENTIALS_PATH = BASE_DIR / "credentials.txt"
@@ -89,7 +89,7 @@ def _process_model(
 
 def main() -> None:
     credentials = utils.load_credentials(DEFAULT_CREDENTIALS_PATH)
-    vignettes = utils.load_vignettes([utils.DATASET_NAMES['assessment']])
+    vignettes = utils.load_vignettes([utils.DATASET_NAMES['baseline_assessment']])
     if not vignettes:
         raise RuntimeError("No assessment vignettes found. Run vignette_generation.py first.")
 

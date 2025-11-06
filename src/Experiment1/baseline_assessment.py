@@ -71,7 +71,7 @@ def process_model(
 
 def main():
     credentials = utils.load_credentials(DEFAULT_CREDENTIALS_PATH)
-    vignettes = utils.load_vignettes([utils.DATASET_NAMES[s] for s in ["excluded", "assessment", "additional"]])
+    vignettes = utils.load_vignettes([utils.DATASET_NAMES[s] for s in ["excluded", "baseline_assessment", "additional"]])
 
     for model_key in utils.MODEL_CONFIGS:
         process_model(model_key, vignettes, credentials)

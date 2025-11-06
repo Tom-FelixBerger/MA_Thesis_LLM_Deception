@@ -20,14 +20,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from transformers.tokenization_utils_base import BatchEncoding
 
 DATASET_NAMES = {
-    'assessment': 'assessment',
+    'baseline_assessment': 'baseline_assessment',
     'probe_train': 'probe_train',
-    'probe_validate': 'probe_validate',
     'probe_test': 'probe_test',
-    'finetuning': 'finetuning',
+    'e3_finetuning': 'e3_finetuning',
     'excluded': 'excluded',
-    'SOO_pretraining': 'SOO_pretraining',
-    'SOO_finetuning': 'SOO_finetuning',
+    'e4_superdeceiver': 'e4_superdeceiver',
+    'e4_finetuning': 'e4_finetuning',
     'additional': 'additional',
 }
 
@@ -334,40 +333,6 @@ def ensure_required_credentials(model_key: str, credentials: Dict[str, str]) -> 
             "Add them to credentials.txt."
         )
 
-
-def _create_openai_text_generator(config: Dict[str, object], credentials: Dict[str, str]) -> Callable[[str], str]:
-    api_key = credentials.get("OPENAI_API_KEY")
-    try:
-        from openai import OpenAI
-    except ImportError as exc:  # pragma: no cover - import guard
-        raise ImportError("The openai package is required to use OpenAI models.") from exc
-
-    client = OpenAI(api_key=api_key)
-    model_id = str(config["model_id"])
-    max_output_tokens = int(config.get("max_output_tokens", 128))
-
-    def generator(prompt: str) -> str:
-        request_kwargs = {
-            "model": model_id,
-            "input": prompt,
-            "max_output_tokens": max_output_tokens,
-        }
-
-        response = client.responses.create(**request_kwargs)
-        output_text = getattr(response, "output_text", None)
-        if output_text is None:
-            chunks = []
-            for item in getattr(response, "output", []) or []:
-                for content in getattr(item, "content", []) or []:
-                    text = getattr(content, "text", None)
-                    if text:
-                        chunks.append(text)
-            output_text = "".join(chunks)
-        return (output_text or "").strip()
-
-    return generator
-
-
 def build_text_generation_backend(
     model_key: str,
     credentials: Dict[str, str],
@@ -397,11 +362,6 @@ def build_text_generation_backend(
 
         return generator
 
-    if config["type"] == "openai":
-        return _create_openai_text_generator(config, credentials)
-
-    raise ValueError(f"Unsupported model type '{config['type']}' for {model_key}")
-
 
 def create_classification_record_generator(
     model_key: str,
@@ -430,25 +390,6 @@ def create_classification_record_generator(
             return generate_classification_record(model, tokenizer, vignette)
 
         return generator
-
-    if config["type"] == "openai":
-        text_generator = _create_openai_text_generator(config, credentials)
-
-        def generator(vignette: dict) -> dict:
-            prompt = build_prompt(vignette)
-            only_new = text_generator(prompt)
-            classification = classify_response(only_new, vignette["response_a"], vignette["response_b"])
-            return {
-                "id": vignette["id"],
-                "template_id": vignette.get("template_id"),
-                "prompt": prompt,
-                "model_response_raw": only_new,
-                "classification": classification,
-            }
-
-        return generator
-
-    raise ValueError(f"Unsupported model type '{config['type']}' for {model_key}")
     
 class MistralAttentionHeadExtractor:
     def __init__(self):
