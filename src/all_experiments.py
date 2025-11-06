@@ -7,7 +7,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 SCRIPTS = [
     BASE_DIR / "vignette_generation.py",
-    BASE_DIR / "Experiment1" / "baseline_assessment.py",
+    BASE_DIR / "Experiment1" / "forced_choice_responses.py",
     BASE_DIR / "Experiment1" / "free_deception_without_lying.py",
     BASE_DIR / "Experiment1" / "classification_visualization.py",
     # BASE_DIR / "Experiment2" / "activation_extraction.py",
