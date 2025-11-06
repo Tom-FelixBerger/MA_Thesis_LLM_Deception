@@ -17,8 +17,14 @@ CLASSIFICATION_ORDER = ["deceptive", "honest", "invalid"]
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / 'data'
 PLOT_DIR = BASE_DIR / 'plots'
-RESPONSES_PATH = DATA_DIR / 'model_responses_baseline_assessment.jsonl'
 VIGNETTES_PATH = DATA_DIR / 'vignettes.jsonl'
+
+MODEL_RESPONSE_FILES = {
+    "mistral": DATA_DIR / "mistral_responses_baseline_assessment.jsonl",
+    "gemma-2-2b": DATA_DIR / "gemma-2-2b_responses_baseline_assessment.jsonl",
+    "gemma-2-9b": DATA_DIR / "gemma-2-9b_responses_baseline_assessment.jsonl",
+    "llama-3.1-8b-instruct": DATA_DIR / "llama-3.1-8b-instruct_responses_baseline_assessment.jsonl",
+}
 
 
 
@@ -63,7 +69,22 @@ def main():
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Load JSONL files
-    df = pd.read_json(RESPONSES_PATH, lines=True)
+    model_frames = []
+    for model, path in MODEL_RESPONSE_FILES.items():
+        if not path.exists():
+            print(f"Warning: response file for {model} not found at {path}. Skipping.")
+            continue
+
+        model_df = pd.read_json(path, lines=True)
+        model_df["model"] = model
+        model_frames.append(model_df)
+
+    if not model_frames:
+        raise FileNotFoundError(
+            "None of the model response files were found. Check MODEL_RESPONSE_FILES paths."
+        )
+
+    df = pd.concat(model_frames, ignore_index=True)
     vign_df = pd.read_json(VIGNETTES_PATH, lines=True)
 
     assess_templates = vign_df[vign_df["dataset"] == "assessment"]["template_id"].unique().tolist()
@@ -73,7 +94,7 @@ def main():
         ["dataset"]
     )
 
-    models = ["mistral", "gemma-3-4b", "gemma-3-12b"]
+    models = list(MODEL_RESPONSE_FILES.keys())
 
     for model in models:
         model_df = df[df["model"] == model]
@@ -110,11 +131,18 @@ def main():
 def write_model_comparison_tables(df: pd.DataFrame, dataset_by_template: pd.Series) -> None:
     """Write a summary file comparing Gemma and Mistral template classifications."""
 
-    target_models = ["gemma-3-4b", "gemma-3-12b" "mistral"]
-    model_dfs = {
-        model: df[df["model"] == model].groupby(["template_id", "classification"]).size().unstack(fill_value=0)
-        for model in target_models
-    }
+    target_models = [model for model in MODEL_RESPONSE_FILES if model.startswith("gemma")]
+    target_models.append("mistral")
+    model_dfs = {}
+    for model in target_models:
+        model_subset = df[df["model"] == model]
+        if model_subset.empty:
+            model_dfs[model] = pd.DataFrame()
+            continue
+
+        model_dfs[model] = (
+            model_subset.groupby(["template_id", "classification"]).size().unstack(fill_value=0)
+        )
 
     if any(model_df.empty for model_df in model_dfs.values()):
         # If either dataframe is empty, still create an empty summary file.
