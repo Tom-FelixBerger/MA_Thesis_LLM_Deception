@@ -9,7 +9,7 @@ SCRIPTS = [
     BASE_DIR / "vignette_generation.py",
     BASE_DIR / "Experiment1" / "forced_choice_responses.py",
     BASE_DIR / "Experiment1" / "free_deception_without_lying.py",
-    BASE_DIR / "Experiment1" / "classification_visualization.py",
+    BASE_DIR / "Experiment1" / "classification_results.py",
     # BASE_DIR / "Experiment2" / "activation_extraction.py",
     # BASE_DIR / "Experiment2" / "probe_training.py",
     # BASE_DIR / "Experiment3" / "reinforce_finetuning_lora.py",
