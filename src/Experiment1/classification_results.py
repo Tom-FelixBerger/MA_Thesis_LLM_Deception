@@ -7,9 +7,12 @@ following artefacts used in the subsequent experiments:
 * A horizontal bar chart showing the number of deceptive answers per model.
 * A text report with binomial significance tests (deceptive vs. honest) for
   each model after filtering out invalid responses.
+* A JSON file enumerating the models that were significantly more deceptive
+  than chance (α = 0.01); Experiment 2 consumes this list to decide which
+  models require probe extraction.
 * A text file listing template IDs that should be excluded because every
-  remaining model (significantly above chance at α=0.01) only produced honest
-  or invalid answers for them.
+  remaining model (significantly above chance at α = 0.01) only produced
+  honest or invalid answers for them.
 * A text file with per-classification counts (honest, deceptive, invalid) for
   the remaining models limited to baseline-assessment templates.
 
@@ -32,6 +35,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
 PLOTS_DIR = BASE_DIR / "plots"
 EXPERIMENT_DATA_DIR = DATA_DIR / "experiment1"
+SIGNIFICANT_MODELS_PATH = EXPERIMENT_DATA_DIR / "significant_models.json"
 
 
 MODEL_FILES: Dict[str, Path] = {
@@ -211,6 +215,19 @@ def _write_significance_report(model_stats: Dict[str, ModelStatistics]) -> None:
     report_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
+def _write_significant_models(model_stats: Dict[str, ModelStatistics]) -> None:
+    """Persist the list of models that are significantly deceptive."""
+
+    EXPERIMENT_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    significant_models = [
+        model for model, stats in model_stats.items() if stats.significant
+    ]
+    payload = {"significant_models": sorted(significant_models)}
+    SIGNIFICANT_MODELS_PATH.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
 def _identify_excluded_templates(
     model_responses: Dict[str, List[dict]], remaining_models: Iterable[str]
 ) -> List[int]:
@@ -299,6 +316,7 @@ def main() -> None:
 
     _plot_deceptive_counts(model_stats)
     _write_significance_report(model_stats)
+    _write_significant_models(model_stats)
 
     remaining_models = [model for model, stats in model_stats.items() if stats.significant]
     excluded_templates = _identify_excluded_templates(model_responses, remaining_models)
