@@ -1,10 +1,6 @@
 """
 Utility functions for loading language models, generating text, and working with
 the deception assessment datasets.
-
-The helper functions default to the original mistralai/Mistral-7B-Instruct-v0.3
-setup, but can now be reused with other Hugging Face models by providing the
-appropriate model name and authentication token.
 """
 import json
 import os
@@ -119,11 +115,9 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
     },
 }
 
-DEFAULT_MISTRAL_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
-
 
 def load_model(
-    model_name: str = DEFAULT_MISTRAL_MODEL,
+    model_name: str,
     quantized: bool = True,
     device_map: str = "cuda",
     token: Optional[str] = None,
@@ -178,14 +172,15 @@ def load_model(
 
 def load_tokenizer(path: Optional[str] = None, token: Optional[str] = None):
     print("Loading tokenizer ...")
-    model_name = path or DEFAULT_MISTRAL_MODEL
+    if not path:
+        raise ValueError("A model path or identifier must be provided to load_tokenizer().")
+    model_name = path
     tokenizer_kwargs = {"trust_remote_code": True}
     if token:
         tokenizer_kwargs["token"] = token
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
-        force_download=True if path is None else False,
         **tokenizer_kwargs,
     )
     tokenizer.pad_token = tokenizer.eos_token
@@ -394,63 +389,80 @@ def ensure_required_credentials(model_key: str, credentials: Dict[str, str]) -> 
             "Add them to credentials.txt."
         )
 
+def get_model_config(model_key: str) -> Dict[str, object]:
+    try:
+        return MODEL_CONFIGS[model_key]
+    except KeyError as exc:
+        raise KeyError(f"Unknown model key: {model_key}") from exc
+
+
+def load_model_for_key(model_key: str, credentials: Dict[str, str]):
+    ensure_required_credentials(model_key, credentials)
+    config = get_model_config(model_key)
+    if config["type"] != "huggingface":
+        raise NotImplementedError(f"Unsupported model type: {config['type']}")
+
+    token = credentials.get("HUGGINGFACE_TOKEN")
+    model_id = str(config["model_id"])
+    return load_model(
+        model_name=model_id,
+        quantized=bool(config.get("quantized", True)),
+        device_map=str(config.get("device_map", "cuda")),
+        token=token,
+        attn_implementation=str(config.get("attn_implementation", "eager")),
+        torch_dtype=config.get("torch_dtype"),
+        bnb_4bit_compute_dtype=config.get("bnb_4bit_compute_dtype"),
+        bnb_4bit_quant_type=str(config.get("bnb_4bit_quant_type", "nf4")),
+        bnb_4bit_use_double_quant=bool(config.get("bnb_4bit_use_double_quant", True)),
+    )
+
+
+def load_tokenizer_for_key(model_key: str, credentials: Dict[str, str]):
+    ensure_required_credentials(model_key, credentials)
+    config = get_model_config(model_key)
+    if config["type"] != "huggingface":
+        raise NotImplementedError(f"Unsupported model type: {config['type']}")
+
+    token = credentials.get("HUGGINGFACE_TOKEN")
+    model_id = str(config["model_id"])
+    return load_tokenizer(path=model_id, token=token)
+
+
+def load_model_and_tokenizer(model_key: str, credentials: Dict[str, str]):
+    model = load_model_for_key(model_key, credentials)
+    tokenizer = load_tokenizer_for_key(model_key, credentials)
+    return model, tokenizer
+
+
 def build_text_generation_backend(
     model_key: str,
     credentials: Dict[str, str],
 ) -> Callable[[str], str]:
-    ensure_required_credentials(model_key, credentials)
-    config = MODEL_CONFIGS[model_key]
+    model, tokenizer = load_model_and_tokenizer(model_key, credentials)
 
-    if config["type"] == "huggingface":
-        token = credentials.get("HUGGINGFACE_TOKEN")
-        model_id = str(config["model_id"])
-        tokenizer = load_tokenizer(path=model_id, token=token)
-        model = load_model(
-            model_name=model_id,
-            quantized=bool(config.get("quantized", True)),
-            device_map=str(config.get("device_map", "cuda")),
-            token=token,
-            attn_implementation=str(config.get("attn_implementation", "eager")),
-            torch_dtype=config.get("torch_dtype"),
-            bnb_4bit_compute_dtype=config.get("bnb_4bit_compute_dtype"),
-            bnb_4bit_quant_type=str(config.get("bnb_4bit_quant_type", "nf4")),
-            bnb_4bit_use_double_quant=bool(config.get("bnb_4bit_use_double_quant", True)),
-        )
+    def generator(prompt) -> str:
+        _, only_new = generate_text(model, tokenizer, prompt)
+        return only_new
 
-        def generator(prompt) -> str:
-            _, only_new = generate_text(model, tokenizer, prompt)
-            return only_new
-
-        return generator
+    return generator
 
 
 def create_classification_record_generator(
     model_key: str,
     credentials: Dict[str, str],
 ) -> Callable[[dict], dict]:
-    ensure_required_credentials(model_key, credentials)
-    config = MODEL_CONFIGS[model_key]
+    model, tokenizer = load_model_and_tokenizer(model_key, credentials)
+    config = get_model_config(model_key)
 
-    if config["type"] == "huggingface":
-        token = credentials.get("HUGGINGFACE_TOKEN")
-        model_id = str(config["model_id"])
-        tokenizer = load_tokenizer(path=model_id, token=token)
-        model = load_model(
-            model_name=model_id,
-            quantized=bool(config.get("quantized", True)),
-            device_map=str(config.get("device_map", "cuda")),
-            token=token,
-            attn_implementation=str(config.get("attn_implementation", "eager")),
-            torch_dtype=config.get("torch_dtype"),
-            bnb_4bit_compute_dtype=config.get("bnb_4bit_compute_dtype"),
-            bnb_4bit_quant_type=str(config.get("bnb_4bit_quant_type", "nf4")),
-            bnb_4bit_use_double_quant=bool(config.get("bnb_4bit_use_double_quant", True)),
+    def generator(vignette: dict) -> dict:
+        return generate_classification_record(
+            model,
+            tokenizer,
+            vignette,
+            supports_system_message=bool(config.get("system_message", True)),
         )
 
-        def generator(vignette: dict) -> dict:
-            return generate_classification_record(model, tokenizer, vignette, supports_system_message=config["system_message"])
-
-        return generator
+    return generator
 
 
 def _resolve_attention_modules(model) -> List[object]:
@@ -524,65 +536,18 @@ def _extract_final_token_head_outputs(
     return np.asarray(flattened, dtype=np.float32)
 
 
-class MistralAttentionHeadExtractor:
-    def __init__(self):
-        print("Loading extractor model and tokenizer ...")
-        self.tokenizer = load_tokenizer()
-        self.model = load_model()
-        self.model.eval()
-        self.num_layers = self.model.config.num_hidden_layers
-        self.num_heads = self.model.config.num_attention_heads
-        self.head_dim = self.model.config.hidden_size // self.num_heads
-        self._attention_modules = _resolve_attention_modules(self.model)
-
-    def get_num_layers(self):
-        return self.num_layers
-    
-    def get_num_heads(self):
-        return self.num_heads
-    
-    def get_head_dim(self):
-        return self.head_dim
-
-    def extract_head_activations(self, text: str):
-        """Return flattened attention head activations at the final token."""
-
-        return _extract_final_token_head_outputs(
-            self.model,
-            self.tokenizer,
-            text,
-            self._attention_modules,
-            self.num_heads,
-            self.head_dim,
-        )
-
-
 class ModelAttentionHeadExtractor:
     """Attention head extractor for any registered Hugging Face model."""
 
     def __init__(self, model_key: str, credentials: Dict[str, str]):
-        ensure_required_credentials(model_key, credentials)
-        config = MODEL_CONFIGS[model_key]
-        token = credentials.get("HUGGINGFACE_TOKEN")
-        model_id = str(config["model_id"])
+        config = get_model_config(model_key)
 
-        print(f"Loading extractor model '{model_key}' ({model_id}) ...")
-        self.tokenizer = load_tokenizer(path=model_id, token=token)
-        self.model = load_model(
-            model_name=model_id,
-            quantized=bool(config.get("quantized", True)),
-            device_map=str(config.get("device_map", "cuda")),
-            token=token,
-            attn_implementation=str(config.get("attn_implementation", "eager")),
-            torch_dtype=config.get("torch_dtype"),
-            bnb_4bit_compute_dtype=config.get("bnb_4bit_compute_dtype"),
-            bnb_4bit_quant_type=str(config.get("bnb_4bit_quant_type", "nf4")),
-            bnb_4bit_use_double_quant=bool(config.get("bnb_4bit_use_double_quant", True)),
-        )
+        print(f"Loading extractor model '{model_key}' ({config['model_id']}) ...")
+        self.model, self.tokenizer = load_model_and_tokenizer(model_key, credentials)
         self.model.eval()
 
         self.model_key = model_key
-        self.model_id = model_id
+        self.model_id = str(config["model_id"])
         self.num_layers = self.model.config.num_hidden_layers
         self.num_heads = self.model.config.num_attention_heads
         self.head_dim = self.model.config.hidden_size // self.num_heads

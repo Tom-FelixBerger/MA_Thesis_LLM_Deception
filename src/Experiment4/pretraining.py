@@ -1,7 +1,8 @@
 import random
-import numpy as np
 from pathlib import Path
+from typing import Dict, List
 
+import numpy as np
 import torch
 import bitsandbytes as bnb
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -10,33 +11,48 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent))
 import utils
 
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / "data"
+MODEL_SAVE_DIR = BASE_DIR / "model_saves"
+CREDENTIALS_PATH = BASE_DIR / "credentials.txt"
+SIGNIFICANT_MODELS_PATH = DATA_DIR / "experiment1" / "significant_models.json"
+SIGNIFICANCE_REPORT_PATH = DATA_DIR / "experiment1" / "significance_tests.txt"
+
 BATCH_SIZE = 10
 NUM_UPDATES = 10
 SEED = 42
 TARGET_LAYERS = list(range(16, 32))
+
+
 def build_target_modules():
     return utils.build_target_modules(TARGET_LAYERS)
 
 
-def main():
+def load_significant_model_keys() -> List[str]:
+    return utils.load_significant_models(
+        SIGNIFICANT_MODELS_PATH,
+        fallback_report_path=SIGNIFICANCE_REPORT_PATH,
+    )
 
-    random.seed(SEED)
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
 
-    vignettes = utils.load_vignettes([utils.DATASET_NAMES['SOO_pretraining']])
-    random.shuffle(vignettes)
+def prepare_model_and_tokenizer(model_key: str, credentials: Dict[str, str]):
+    model, tokenizer = utils.load_model_and_tokenizer(model_key, credentials)
+    model.config.use_cache = False
+    model = prepare_model_for_kbit_training(model)
+    model.gradient_checkpointing_enable()
+    return model, tokenizer
 
-    model_dir = Path(__file__).resolve().parents[2] / "model_saves" / f"mistral_reinforce_lora_ckpt_pretrained"
+
+def run_pretraining_for_model(model_key: str, credentials: Dict[str, str], vignettes: List[dict]):
+    config = utils.get_model_config(model_key)
+    supports_system_message = bool(config.get("system_message", True))
+
+    model_dir = MODEL_SAVE_DIR / f"{model_key}_reinforce_lora_ckpt_pretrained"
     model_dir.mkdir(parents=True, exist_ok=True)
     adapter_dir, tokenizer_dir, checkpoint_file = utils.model_save_dirs(model_dir)
 
-    tokenizer = utils.load_tokenizer()
-    model = utils.load_model()
-    model.config.use_cache = False
-
-    model = prepare_model_for_kbit_training(model)
-    model.gradient_checkpointing_enable()
+    model, tokenizer = prepare_model_and_tokenizer(model_key, credentials)
 
     lora_config = LoraConfig(
         r=8,
@@ -47,7 +63,7 @@ def main():
         task_type="CAUSAL_LM",
     )
 
-    print("Applying LoRA to layers 16-31 only...")
+    print(f"[{model_key}] Applying LoRA to layers 16-31 only...")
     model = get_peft_model(model, lora_config)
 
     utils.freeze_model_parameters(model)
@@ -57,7 +73,7 @@ def main():
 
     start_update = 0
     if checkpoint_file.exists():
-        print(f"Loading checkpoint: {checkpoint_file}")
+        print(f"[{model_key}] Loading checkpoint: {checkpoint_file}")
         ckpt = torch.load(checkpoint_file, map_location="cpu")
         if "optim_state" in ckpt:
             try:
@@ -70,7 +86,7 @@ def main():
     vignette_index = 0
 
     for update in range(start_update, NUM_UPDATES):
-        print(f"Update {update + 1} of {NUM_UPDATES}")
+        print(f"[{model_key}] Update {update + 1} of {NUM_UPDATES}")
 
         if vignette_index + BATCH_SIZE > len(vignettes):
             random.shuffle(vignettes)
@@ -89,11 +105,12 @@ def main():
                     vignette,
                     instruction_key=f"instruction_{condition}",
                     scenario_key=f"scenario_{condition}",
+                    supports_system_message=supports_system_message,
                 )
 
                 model.eval()
                 with torch.no_grad():
-                    full_response, only_new = utils.generate_text(
+                    _, only_new = utils.generate_text(
                         model,
                         tokenizer,
                         prompt_messages,
@@ -108,8 +125,8 @@ def main():
                 else:
                     reward = -1.0
                 print(
-                    f"Processing Vignette {i + 1} of {BATCH_SIZE} | "
-                    f"Vignette ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"
+                    f"[{model_key}] Vignette {i + 1} of {BATCH_SIZE} | "
+                    f"Condition: {condition} | ID: {vignette['id']} | Classification: {classification} | Reward: {reward:.4f}"
                 )
 
                 model.train()
@@ -134,9 +151,37 @@ def main():
             loss_value = 0.0
 
         utils.save_training_state(model_dir, model, tokenizer, optimizer, update_idx=update)
-        print(f"=== Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f} ===")
+        print(f"[{model_key}] Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f}")
 
-    print(f"Training finished. Final adapters saved to: {adapter_dir}")
+    print(f"[{model_key}] Training finished. Final adapters saved to: {adapter_dir}")
+
+    del model
+    torch.cuda.empty_cache()
+
+
+def main():
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+
+    credentials = utils.load_credentials(CREDENTIALS_PATH)
+    significant_models = load_significant_model_keys()
+    if not significant_models:
+        raise RuntimeError(
+            "No significant models found. Run Experiment1/classification_results.py first to "
+            "identify the models for Experiment 4 pretraining."
+        )
+
+    dataset_name = utils.DATASET_NAMES['e4_superdeceiver']
+    vignettes = utils.load_vignettes([dataset_name])
+    if not vignettes:
+        raise RuntimeError("No pretraining vignettes available for Experiment 4.")
+
+    for model_key in significant_models:
+        print(f"=== Running Experiment 4 pretraining for model '{model_key}' ===")
+        model_vignettes = list(vignettes)
+        random.shuffle(model_vignettes)
+        run_pretraining_for_model(model_key, credentials, model_vignettes)
 
 
 if __name__ == "__main__":

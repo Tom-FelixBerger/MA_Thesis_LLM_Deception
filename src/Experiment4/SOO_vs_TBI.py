@@ -5,6 +5,7 @@ import random
 import joblib
 import numpy as np
 from pathlib import Path
+from typing import Dict, List
 
 import torch
 import torch.nn.functional as F
@@ -20,20 +21,28 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent))
 import utils
 
-CLASSIFIER_PATH_P = Path(__file__).resolve().parents[2] / "model_saves" / "logreg_clf_targets_p.pkl"
-CLASSIFIER_PATH_C = Path(__file__).resolve().parents[2] / "model_saves" / "logreg_clf_targets_c.pkl"
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / "data"
+MODEL_SAVE_DIR = BASE_DIR / "model_saves"
+CREDENTIALS_PATH = BASE_DIR / "credentials.txt"
+SIGNIFICANT_MODELS_PATH = DATA_DIR / "experiment1" / "significant_models.json"
+SIGNIFICANCE_REPORT_PATH = DATA_DIR / "experiment1" / "significance_tests.txt"
+CLASSIFIER_PATH_P = MODEL_SAVE_DIR / "logreg_clf_targets_p.pkl"
+CLASSIFIER_PATH_C = MODEL_SAVE_DIR / "logreg_clf_targets_c.pkl"
 
 BATCH_SIZE = 10
 NUM_UPDATES = 25
 SEED = 42
-BASE_DIR = Path(__file__).resolve().parents[2]
-PRETRAINED_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_pretrained"
-SOO_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_soo"
-TBI_DIR = BASE_DIR / "model_saves" / "mistral_reinforce_lora_ckpt_tbi"
 
 
-def get_pretrained_assets():
-    adapter_dir, tokenizer_dir, _ = utils.model_save_dirs(PRETRAINED_DIR)
+def model_dir(model_key: str, suffix: str) -> Path:
+    return MODEL_SAVE_DIR / f"{model_key}_{suffix}"
+
+
+def get_pretrained_assets(model_key: str):
+    pretrained_dir = model_dir(model_key, "reinforce_lora_ckpt_pretrained")
+    adapter_dir, tokenizer_dir, _ = utils.model_save_dirs(pretrained_dir)
     if not adapter_dir.exists():
         raise FileNotFoundError(
             "Pretrained adapters not found. Run Experiment4/pretraining.py before finetuning."
@@ -41,13 +50,28 @@ def get_pretrained_assets():
     return adapter_dir, tokenizer_dir
 
 
-def load_tokenizer_for_training(primary_dir: Path, fallback_dir: Path):
-    source_dir = primary_dir if primary_dir.exists() else fallback_dir
-    return utils.load_tokenizer(path=str(source_dir))
+def load_tokenizer_for_training(
+    model_key: str,
+    credentials: Dict[str, str],
+    primary_dir: Path,
+    pretrained_dir: Path,
+):
+    config = utils.get_model_config(model_key)
+    token = credentials.get("HUGGINGFACE_TOKEN")
+    if primary_dir.exists():
+        return utils.load_tokenizer(path=str(primary_dir))
+    if pretrained_dir.exists():
+        return utils.load_tokenizer(path=str(pretrained_dir))
+    return utils.load_tokenizer(path=str(config["model_id"]), token=token)
 
 
-def prepare_tbi_model(adapter_dir_out: Path, pretrained_adapter_dir: Path):
-    base_model = utils.load_model()
+def prepare_tbi_model(
+    model_key: str,
+    credentials: Dict[str, str],
+    adapter_dir_out: Path,
+    pretrained_adapter_dir: Path,
+):
+    base_model = utils.load_model_for_key(model_key, credentials)
     base_model.config.use_cache = False
     base_model = prepare_model_for_kbit_training(base_model)
     base_model.gradient_checkpointing_enable()
@@ -60,8 +84,13 @@ def prepare_tbi_model(adapter_dir_out: Path, pretrained_adapter_dir: Path):
     return model
 
 
-def prepare_soo_model(adapter_dir_out: Path, pretrained_adapter_dir: Path):
-    base_model = utils.load_model()
+def prepare_soo_model(
+    model_key: str,
+    credentials: Dict[str, str],
+    adapter_dir_out: Path,
+    pretrained_adapter_dir: Path,
+):
+    base_model = utils.load_model_for_key(model_key, credentials)
     base_model.config.use_cache = False
     base_model = prepare_model_for_kbit_training(base_model)
     base_model.gradient_checkpointing_enable()
@@ -90,7 +119,15 @@ def prepare_soo_model(adapter_dir_out: Path, pretrained_adapter_dir: Path):
     return model
 
 
-def train_tbi(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
+def train_tbi(
+    model_key: str,
+    credentials: Dict[str, str],
+    vignettes: List[dict],
+    pretrained_adapter_dir: Path,
+    pretrained_tokenizer_dir: Path,
+    extractor,
+    extractor_meta,
+):
     heads_p = utils.top_heads(target='p')
     heads_c = utils.top_heads(target='c')
     assert len(heads_p) == 10 and len(heads_c) == 10, "Expected 10 top heads per probe."
@@ -98,21 +135,26 @@ def train_tbi(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
     probe_p = joblib.load(CLASSIFIER_PATH_P)
     probe_c = joblib.load(CLASSIFIER_PATH_C)
 
-    extractor = utils.MistralAttentionHeadExtractor()
-    extractor_meta = utils.extractor_metadata(extractor)
+    config = utils.get_model_config(model_key)
+    supports_system_message = bool(config.get("system_message", True))
 
-    model_dir = TBI_DIR
-    model_dir.mkdir(parents=True, exist_ok=True)
-    adapter_dir_out, tokenizer_dir_out, checkpoint_file = utils.model_save_dirs(model_dir)
+    model_dir_path = model_dir(model_key, "reinforce_lora_ckpt_tbi")
+    model_dir_path.mkdir(parents=True, exist_ok=True)
+    adapter_dir_out, tokenizer_dir_out, checkpoint_file = utils.model_save_dirs(model_dir_path)
 
-    tokenizer = load_tokenizer_for_training(tokenizer_dir_out, pretrained_tokenizer_dir)
-    model = prepare_tbi_model(adapter_dir_out, pretrained_adapter_dir)
+    tokenizer = load_tokenizer_for_training(
+        model_key,
+        credentials,
+        tokenizer_dir_out,
+        pretrained_tokenizer_dir,
+    )
+    model = prepare_tbi_model(model_key, credentials, adapter_dir_out, pretrained_adapter_dir)
 
     optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-4)
 
     start_update = 0
     if checkpoint_file.exists():
-        print(f"Loading checkpoint: {checkpoint_file}")
+        print(f"[{model_key} | TBI] Loading checkpoint: {checkpoint_file}")
         ckpt = torch.load(checkpoint_file, map_location="cpu")
         if "optim_state" in ckpt:
             try:
@@ -125,7 +167,7 @@ def train_tbi(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
     vignette_index = 0
 
     for update in range(start_update, NUM_UPDATES):
-        print(f"[TBI] Update {update + 1} of {NUM_UPDATES}")
+        print(f"[{model_key} | TBI] Update {update + 1} of {NUM_UPDATES}")
 
         if vignette_index + BATCH_SIZE > len(vignettes):
             random.shuffle(vignettes)
@@ -143,7 +185,10 @@ def train_tbi(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
             response_b = vignette["response_b"]
 
             for question in [vignette["question_1"], vignette["question_2"]]:
-                prompt_messages = utils.build_chat_messages(vignette)
+                prompt_messages = utils.build_chat_messages(
+                    vignette,
+                    supports_system_message=supports_system_message,
+                )
 
                 model.eval()
                 with torch.no_grad():
@@ -163,7 +208,7 @@ def train_tbi(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
                     p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
                     reward = float(1.0 - 2.0 * p_disagree)
                 print(
-                    f"[TBI] Vignette {i + 1}/{current_batch_size} | ID: {vignette['id']} | "
+                    f"[{model_key} | TBI] Vignette {i + 1}/{current_batch_size} | ID: {vignette['id']} | "
                     f"Classification: {classification} | Reward: {reward:.4f}"
                 )
 
@@ -188,10 +233,13 @@ def train_tbi(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
         else:
             loss_value = 0.0
 
-        utils.save_training_state(model_dir, model, tokenizer, optimizer, update_idx=update)
-        print(f"[TBI] Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f}")
+        utils.save_training_state(model_dir_path, model, tokenizer, optimizer, update_idx=update)
+        print(f"[{model_key} | TBI] Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f}")
 
-    print(f"TBI finetuning finished. Final adapters saved to: {adapter_dir_out}")
+    print(f"[{model_key} | TBI] Finetuning finished. Final adapters saved to: {adapter_dir_out}")
+
+    del model
+    torch.cuda.empty_cache()
 
 
 def kl_divergence_between_prompts(model, tokenizer, prompt_self, prompt_other):
@@ -212,19 +260,30 @@ def kl_divergence_between_prompts(model, tokenizer, prompt_self, prompt_other):
     return 0.5 * (kl_other_to_self + kl_self_to_other)
 
 
-def train_soo(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
-    model_dir = SOO_DIR
-    model_dir.mkdir(parents=True, exist_ok=True)
-    adapter_dir_out, tokenizer_dir_out, checkpoint_file = utils.model_save_dirs(model_dir)
+def train_soo(
+    model_key: str,
+    credentials: Dict[str, str],
+    vignettes: List[dict],
+    pretrained_adapter_dir: Path,
+    pretrained_tokenizer_dir: Path,
+):
+    model_dir_path = model_dir(model_key, "reinforce_lora_ckpt_soo")
+    model_dir_path.mkdir(parents=True, exist_ok=True)
+    adapter_dir_out, tokenizer_dir_out, checkpoint_file = utils.model_save_dirs(model_dir_path)
 
-    tokenizer = load_tokenizer_for_training(tokenizer_dir_out, pretrained_tokenizer_dir)
-    model = prepare_soo_model(adapter_dir_out, pretrained_adapter_dir)
+    tokenizer = load_tokenizer_for_training(
+        model_key,
+        credentials,
+        tokenizer_dir_out,
+        pretrained_tokenizer_dir,
+    )
+    model = prepare_soo_model(model_key, credentials, adapter_dir_out, pretrained_adapter_dir)
 
     optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-4)
 
     start_update = 0
     if checkpoint_file.exists():
-        print(f"Loading checkpoint: {checkpoint_file}")
+        print(f"[{model_key} | SOO] Loading checkpoint: {checkpoint_file}")
         ckpt = torch.load(checkpoint_file, map_location="cpu")
         if "optim_state" in ckpt:
             try:
@@ -237,7 +296,7 @@ def train_soo(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
     vignette_index = 0
 
     for update in range(start_update, NUM_UPDATES):
-        print(f"[SOO] Update {update + 1} of {NUM_UPDATES}")
+        print(f"[{model_key} | SOO] Update {update + 1} of {NUM_UPDATES}")
 
         if vignette_index + BATCH_SIZE > len(vignettes):
             random.shuffle(vignettes)
@@ -258,7 +317,7 @@ def train_soo(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
             batch_losses.append(loss)
 
             print(
-                f"[SOO] Vignette {i + 1}/{current_batch_size} | ID: {vignette['id']} | "
+                f"[{model_key} | SOO] Vignette {i + 1}/{current_batch_size} | ID: {vignette['id']} | "
                 f"Loss: {loss.item():.4f}"
             )
 
@@ -271,10 +330,13 @@ def train_soo(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
         else:
             loss_value = 0.0
 
-        utils.save_training_state(model_dir, model, tokenizer, optimizer, update_idx=update)
-        print(f"[SOO] Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f}")
+        utils.save_training_state(model_dir_path, model, tokenizer, optimizer, update_idx=update)
+        print(f"[{model_key} | SOO] Completed update {update + 1}/{NUM_UPDATES} | loss={loss_value:.4f}")
 
-    print(f"SOO finetuning finished. Final adapters saved to: {adapter_dir_out}")
+    print(f"[{model_key} | SOO] Finetuning finished. Final adapters saved to: {adapter_dir_out}")
+
+    del model
+    torch.cuda.empty_cache()
 
 
 def main():
@@ -282,21 +344,56 @@ def main():
     np.random.seed(SEED)
     torch.manual_seed(SEED)
 
-    pretrained_adapter_dir, pretrained_tokenizer_dir = get_pretrained_assets()
+    credentials = utils.load_credentials(CREDENTIALS_PATH)
+    significant_models = utils.load_significant_models(
+        SIGNIFICANT_MODELS_PATH,
+        fallback_report_path=SIGNIFICANCE_REPORT_PATH,
+    )
+    if not significant_models:
+        raise RuntimeError(
+            "No significant models found. Run Experiment1/classification_results.py first to "
+            "identify the models for Experiment 4 finetuning."
+        )
 
-    vignettes_tbi = utils.load_vignettes([utils.DATASET_NAMES['finetuning']])
-    vignettes_soo = utils.load_vignettes([utils.DATASET_NAMES['SOO_finetuning']])
+    vignettes_tbi = utils.load_vignettes([utils.DATASET_NAMES['e4_finetuning']])
+    vignettes_soo = utils.load_vignettes([utils.DATASET_NAMES['e4_superdeceiver']])
 
     if not vignettes_tbi:
         raise RuntimeError("No finetuning vignettes found for TBI training.")
     if not vignettes_soo:
         raise RuntimeError("No finetuning vignettes found for SOO training.")
 
-    random.shuffle(vignettes_tbi)
-    random.shuffle(vignettes_soo)
+    for model_key in significant_models:
+        print(f"=== Running Experiment 4 finetuning for model '{model_key}' ===")
+        pretrained_adapter_dir, pretrained_tokenizer_dir = get_pretrained_assets(model_key)
 
-    train_tbi(vignettes_tbi, pretrained_adapter_dir, pretrained_tokenizer_dir)
-    train_soo(vignettes_soo, pretrained_adapter_dir, pretrained_tokenizer_dir)
+        extractor = utils.ModelAttentionHeadExtractor(model_key, credentials)
+        extractor_meta = utils.extractor_metadata(extractor)
+
+        model_vignettes_tbi = list(vignettes_tbi)
+        model_vignettes_soo = list(vignettes_soo)
+        random.shuffle(model_vignettes_tbi)
+        random.shuffle(model_vignettes_soo)
+
+        train_tbi(
+            model_key,
+            credentials,
+            model_vignettes_tbi,
+            pretrained_adapter_dir,
+            pretrained_tokenizer_dir,
+            extractor,
+            extractor_meta,
+        )
+        train_soo(
+            model_key,
+            credentials,
+            model_vignettes_soo,
+            pretrained_adapter_dir,
+            pretrained_tokenizer_dir,
+        )
+
+        del extractor
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
