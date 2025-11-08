@@ -62,6 +62,7 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
         "device_map": "cuda",
         "attn_implementation": "eager",
         "required_credentials": ["HUGGINGFACE_TOKEN"],
+        "system_message": True,
     },
     # "gemma-3-4b": {
     #     "type": "huggingface",
@@ -92,6 +93,7 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
         "torch_dtype": "bfloat16",
         "bnb_4bit_compute_dtype": "bfloat16",
         "required_credentials": ["HUGGINGFACE_TOKEN"],
+        "system_message": False,
     },
     "gemma-2-9b": {
         "type": "huggingface",
@@ -102,6 +104,7 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
         "torch_dtype": "bfloat16",
         "bnb_4bit_compute_dtype": "bfloat16",
         "required_credentials": ["HUGGINGFACE_TOKEN"],
+        "system_message": False,
     },
     "llama-3.1-8b-instruct": {
         "type": "huggingface",
@@ -112,6 +115,7 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
         "torch_dtype": "bfloat16",
         "bnb_4bit_compute_dtype": "bfloat16",
         "required_credentials": ["HUGGINGFACE_TOKEN"],
+        "system_message": True,
     },
 }
 
@@ -202,6 +206,7 @@ def build_chat_messages(
     vignette: dict,
     instruction_key: str = "instruction_with_options",
     scenario_key: str = "scenario",
+    supports_system_message: bool = True,
 ) -> List[Dict[str, str]]:
     """Create chat-formatted messages for a vignette prompt."""
 
@@ -210,7 +215,7 @@ def build_chat_messages(
 
     messages: List[Dict[str, str]] = []
     if scenario:
-        messages.append({"role": "system", "content": scenario})
+        messages.append({"role": "system" if supports_system_message else "user", "content": scenario})
     messages.append({"role": "user", "content": instruction})
     return messages
 
@@ -226,12 +231,14 @@ def generate_classification_record(
     *,
     instruction_key: str = "instruction_with_options",
     scenario_key: str = "scenario",
+    supports_system_message: bool = True,
 ):
     prompt = build_prompt(vignette, instruction_key=instruction_key, scenario_key=scenario_key)
     messages = build_chat_messages(
         vignette,
         instruction_key=instruction_key,
         scenario_key=scenario_key,
+        supports_system_message = supports_system_message
     )
     full_response, only_new = generate_text(model, tokenizer, messages)
     classification = classify_response(only_new, vignette["response_a"], vignette["response_b"])
@@ -441,7 +448,7 @@ def create_classification_record_generator(
         )
 
         def generator(vignette: dict) -> dict:
-            return generate_classification_record(model, tokenizer, vignette)
+            return generate_classification_record(model, tokenizer, vignette, supports_system_message=config["system_message"])
 
         return generator
 
