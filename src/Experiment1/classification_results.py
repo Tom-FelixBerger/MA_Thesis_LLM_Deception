@@ -35,11 +35,11 @@ EXPERIMENT_DATA_DIR = DATA_DIR / "experiment1"
 
 
 MODEL_FILES: Dict[str, Path] = {
-    "mistral": DATA_DIR / "mistral_responses_baseline_assessment.jsonl",
-    "gemma-2-2b": DATA_DIR / "gemma-2-2b_responses_baseline_assessment.jsonl",
-    "gemma-2-9b": DATA_DIR / "gemma-2-9b_responses_baseline_assessment.jsonl",
+    "mistral": DATA_DIR / "mistral_responses_forced_choice_responses.jsonl",
+    "gemma-2-2b": DATA_DIR / "gemma-2-2b_responses_forced_choice_responses.jsonl",
+    "gemma-2-9b": DATA_DIR / "gemma-2-9b_responses_forced_choice_responses.jsonl",
     "llama-3.1-8b-instruct": DATA_DIR
-    / "llama-3.1-8b-instruct_responses_baseline_assessment.jsonl",
+    / "llama-3.1-8b-instruct_responses_forced_choice_responses.jsonl",
 }
 
 

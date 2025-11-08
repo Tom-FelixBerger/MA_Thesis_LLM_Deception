@@ -24,7 +24,7 @@ def process_model(
     record_generator = utils.create_classification_record_generator(model_key, credentials)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = DATA_DIR / f"{model_key}_responses_baseline_assessment.jsonl"
+    output_path = DATA_DIR / f"{model_key}_responses_forced_choice_responses.jsonl"
 
     print("#" * 80)
     print(f"Running baseline assessment with model '{model_key}' ({config['model_id']}).")
