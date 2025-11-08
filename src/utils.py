@@ -8,9 +8,10 @@ appropriate model name and authentication token.
 """
 import json
 import os
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -22,6 +23,7 @@ from transformers.tokenization_utils_base import BatchEncoding
 DATASET_NAMES = {
     'baseline_assessment': 'baseline_assessment',
     'probe_train': 'probe_train',
+    'probe_validate': 'probe_validate',
     'probe_test': 'probe_test',
     'e3_finetuning': 'e3_finetuning',
     'excluded': 'excluded',
@@ -442,7 +444,79 @@ def create_classification_record_generator(
             return generate_classification_record(model, tokenizer, vignette)
 
         return generator
-    
+
+
+def _resolve_attention_modules(model) -> List[object]:
+    """Return the attention submodules for each transformer layer."""
+
+    candidates: List[Iterable[object]] = []
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        candidates.append(model.model.layers)
+    if hasattr(model, "layers"):
+        candidates.append(model.layers)
+
+    for container in candidates:
+        modules: List[object] = []
+        try:
+            for layer in container:  # type: ignore[assignment]
+                if hasattr(layer, "self_attn"):
+                    modules.append(layer.self_attn)
+                elif hasattr(layer, "self_attention"):
+                    modules.append(layer.self_attention)
+                else:
+                    raise AttributeError
+        except AttributeError:
+            continue
+
+        if modules:
+            return modules
+
+    raise RuntimeError("Unable to resolve attention modules for the provided model.")
+
+
+def _extract_final_token_head_outputs(
+    model,
+    tokenizer,
+    text: str,
+    attention_modules: Sequence[object],
+    num_heads: int,
+    head_dim: int,
+) -> np.ndarray:
+    """Capture flattened attention head activations at the final token."""
+
+    inputs = tokenize_input(text, tokenizer).to(model.device)
+
+    head_activations: Dict[int, np.ndarray] = {}
+
+    def attention_hook(module, _input, output, layer_idx: int):
+        attn_output = output[0]
+        batch_size, _seq_len, hidden_size = attn_output.shape
+        attn_output_heads = attn_output.view(batch_size, -1, num_heads, head_dim)
+        final_token_idx = inputs["attention_mask"].sum(dim=1) - 1
+        final_activations = attn_output_heads[0, final_token_idx[0]]
+        head_activations[layer_idx] = final_activations.detach().cpu().numpy()
+
+    hooks = []
+    for layer_idx, module in enumerate(attention_modules):
+        hook = module.register_forward_hook(
+            lambda module, input, output, idx=layer_idx: attention_hook(module, input, output, idx)
+        )
+        hooks.append(hook)
+
+    with torch.no_grad():
+        _ = model(**inputs)
+
+    for hook in hooks:
+        hook.remove()
+
+    flattened: List[float] = []
+    for layer_idx in range(len(attention_modules)):
+        layer_activations = head_activations[layer_idx]
+        flattened.extend(layer_activations.reshape(-1))
+
+    return np.asarray(flattened, dtype=np.float32)
+
+
 class MistralAttentionHeadExtractor:
     def __init__(self):
         print("Loading extractor model and tokenizer ...")
@@ -452,6 +526,7 @@ class MistralAttentionHeadExtractor:
         self.num_layers = self.model.config.num_hidden_layers
         self.num_heads = self.model.config.num_attention_heads
         self.head_dim = self.model.config.hidden_size // self.num_heads
+        self._attention_modules = _resolve_attention_modules(self.model)
 
     def get_num_layers(self):
         return self.num_layers
@@ -463,57 +538,73 @@ class MistralAttentionHeadExtractor:
         return self.head_dim
 
     def extract_head_activations(self, text: str):
-        """
-        Returns a list of size L x H x D containing attention head activations
-        at the final token.
-        """
-        # Tokenize the input text
-        inputs = tokenize_input(text, self.tokenizer).to(self.model.device)
-        
-        # Hook function to capture attention head activations
-        head_activations = {}
-        
-        def attention_hook(module, input, output, layer_idx):
-            # For Mistral, the attention output is a tuple: (attention_output, attention_weights, ...)
-            # We want the attention output after the head projection
-            attn_output = output[0]  # Shape: (batch_size, seq_len, hidden_size)
-            
-            # Reshape to separate heads: (batch_size, seq_len, num_heads, head_dim)
-            batch_size, seq_len, hidden_size = attn_output.shape
-            attn_output_heads = attn_output.view(batch_size, seq_len, self.num_heads, self.head_dim)
-            
-            # Get activations at the final token position
-            final_token_idx = inputs['attention_mask'].sum(dim=1) - 1  # Last non-padding token
-            final_activations = attn_output_heads[0, final_token_idx[0]]  # Shape: (num_heads, head_dim)
-            
-            head_activations[layer_idx] = final_activations.detach().cpu().numpy()
-        
-        # Register hooks for all attention layers
-        hooks = []
-        for layer_idx in range(self.num_layers):
-            layer = self.model.model.layers[layer_idx].self_attn
-            hook = layer.register_forward_hook(
-                lambda module, input, output, idx=layer_idx: attention_hook(module, input, output, idx)
-            )
-            hooks.append(hook)
-        
-        # Forward pass
-        with torch.no_grad():
-            _ = self.model(**inputs)
-        
-        # Remove hooks
-        for hook in hooks:
-            hook.remove()
-        
-        # Flatten activations into a single array
-        flattened_activations = []
-        for layer_idx in range(self.num_layers):
-            layer_activations = head_activations[layer_idx]  # Shape: (num_heads, head_dim)
-            for head_idx in range(self.num_heads):
-                for dim_idx in range(self.head_dim):
-                    flattened_activations.append(float(layer_activations[head_idx, dim_idx]))
-        
-        return np.array(flattened_activations, dtype=np.float32)
+        """Return flattened attention head activations at the final token."""
+
+        return _extract_final_token_head_outputs(
+            self.model,
+            self.tokenizer,
+            text,
+            self._attention_modules,
+            self.num_heads,
+            self.head_dim,
+        )
+
+
+class ModelAttentionHeadExtractor:
+    """Attention head extractor for any registered Hugging Face model."""
+
+    def __init__(self, model_key: str, credentials: Dict[str, str]):
+        ensure_required_credentials(model_key, credentials)
+        config = MODEL_CONFIGS[model_key]
+        token = credentials.get("HUGGINGFACE_TOKEN")
+        model_id = str(config["model_id"])
+
+        print(f"Loading extractor model '{model_key}' ({model_id}) ...")
+        self.tokenizer = load_tokenizer(path=model_id, token=token)
+        self.model = load_model(
+            model_name=model_id,
+            quantized=bool(config.get("quantized", True)),
+            device_map=str(config.get("device_map", "cuda")),
+            token=token,
+            attn_implementation=str(config.get("attn_implementation", "eager")),
+            torch_dtype=config.get("torch_dtype"),
+            bnb_4bit_compute_dtype=config.get("bnb_4bit_compute_dtype"),
+            bnb_4bit_quant_type=str(config.get("bnb_4bit_quant_type", "nf4")),
+            bnb_4bit_use_double_quant=bool(config.get("bnb_4bit_use_double_quant", True)),
+        )
+        self.model.eval()
+
+        self.model_key = model_key
+        self.model_id = model_id
+        self.num_layers = self.model.config.num_hidden_layers
+        self.num_heads = self.model.config.num_attention_heads
+        self.head_dim = self.model.config.hidden_size // self.num_heads
+        self._attention_modules = _resolve_attention_modules(self.model)
+
+    def get_num_layers(self):
+        return self.num_layers
+
+    def get_num_heads(self):
+        return self.num_heads
+
+    def get_head_dim(self):
+        return self.head_dim
+
+    def get_model_key(self) -> str:
+        return self.model_key
+
+    def get_model_id(self) -> str:
+        return self.model_id
+
+    def extract_head_activations(self, text: str) -> np.ndarray:
+        return _extract_final_token_head_outputs(
+            self.model,
+            self.tokenizer,
+            text,
+            self._attention_modules,
+            self.num_heads,
+            self.head_dim,
+        )
 
 
 def top_heads(target):
@@ -540,6 +631,12 @@ def save_activation_batch(filename, batch_data, metadata, append=True):
     activations_array = np.asarray(batch_data['activations'], dtype=np.float32)
     vignette_ids_str = [str(vid) for vid in batch_data['vignette_ids']]
     datasets_bytes = [str(ds).encode('utf-8') for ds in batch_data['datasets']]
+    feature_names = metadata.get('feature_names')
+    feature_names_hash = None
+    if feature_names is not None:
+        feature_names = [str(name) for name in feature_names]
+        joined = "||".join(feature_names)
+        feature_names_hash = hashlib.sha1(joined.encode('utf-8')).hexdigest()
 
     with h5py.File(filename, mode) as f:
         if 'activations' not in f:
@@ -556,10 +653,37 @@ def save_activation_batch(filename, batch_data, metadata, append=True):
             f.attrs['num_layers'] = metadata['num_layers']
             f.attrs['num_heads'] = metadata['num_heads']
             f.attrs['head_dim'] = metadata['head_dim']
+            if 'model_key' in metadata:
+                f.attrs['model_key'] = str(metadata['model_key'])
+            if 'model_id' in metadata:
+                f.attrs['model_id'] = str(metadata['model_id'])
+            if feature_names is not None:
+                dtype = h5py.string_dtype(encoding='utf-8')
+                f.create_dataset('feature_names', data=np.array(feature_names, dtype=object), dtype=dtype)
+            if feature_names_hash is not None:
+                f.attrs['feature_names_hash'] = feature_names_hash
         else:
             existing_metadata = load_activation_metadata(filename)
-            if existing_metadata != metadata:
-                raise ValueError("Metadata mismatch when appending activations to file.")
+            for key in ('num_layers', 'num_heads', 'head_dim'):
+                if existing_metadata.get(key) != metadata[key]:
+                    raise ValueError("Metadata mismatch when appending activations to file.")
+            if 'model_key' in metadata:
+                existing_key = existing_metadata.get('model_key')
+                if existing_key and existing_key != str(metadata['model_key']):
+                    raise ValueError("Model key mismatch when appending activations to file.")
+            if 'model_id' in metadata:
+                existing_id = existing_metadata.get('model_id')
+                if existing_id and existing_id != str(metadata['model_id']):
+                    raise ValueError("Model id mismatch when appending activations to file.")
+            if feature_names_hash is not None:
+                existing_hash = existing_metadata.get('feature_names_hash')
+                if existing_hash and existing_hash != feature_names_hash:
+                    raise ValueError("Feature name mismatch when appending activations to file.")
+                if 'feature_names' not in f:
+                    dtype = h5py.string_dtype(encoding='utf-8')
+                    f.create_dataset('feature_names', data=np.array(feature_names, dtype=object), dtype=dtype)
+                if 'feature_names_hash' not in f.attrs:
+                    f.attrs['feature_names_hash'] = feature_names_hash
 
             current_size = len(f['vignette_ids'])
             new_size = current_size + len(batch_data['vignette_ids'])
@@ -581,11 +705,18 @@ def save_activation_batch(filename, batch_data, metadata, append=True):
 
 def load_activation_metadata(filename):
     with h5py.File(filename, 'r') as f:
-        return {
+        metadata = {
             'num_layers': int(f.attrs['num_layers']),
             'num_heads': int(f.attrs['num_heads']),
             'head_dim': int(f.attrs['head_dim'])
         }
+        if 'model_key' in f.attrs:
+            metadata['model_key'] = f.attrs['model_key']
+        if 'model_id' in f.attrs:
+            metadata['model_id'] = f.attrs['model_id']
+        if 'feature_names_hash' in f.attrs:
+            metadata['feature_names_hash'] = f.attrs['feature_names_hash']
+        return metadata
 
 
 def load_activation_batch(filename, indices=None, return_flat=True):
@@ -632,12 +763,77 @@ def count_saved_activations(filename):
         return len(f['vignette_ids'])
 
 
-def extractor_metadata(extractor: MistralAttentionHeadExtractor):
+def extractor_metadata(extractor) -> Dict[str, int]:
     return {
         'num_layers': extractor.get_num_layers(),
         'num_heads': extractor.get_num_heads(),
         'head_dim': extractor.get_head_dim(),
     }
+
+
+def build_feature_names(num_layers: int, num_heads: int, head_dim: int) -> List[str]:
+    feature_names: List[str] = []
+    for layer_idx in range(num_layers):
+        for head_idx in range(num_heads):
+            for dim_idx in range(head_dim):
+                feature_names.append(
+                    f"layer{layer_idx:02d}_head{head_idx:02d}_dim{dim_idx:03d}"
+                )
+    return feature_names
+
+
+def load_feature_names(filename: str) -> Optional[List[str]]:
+    with h5py.File(filename, 'r') as f:
+        if 'feature_names' not in f:
+            return None
+        dataset = f['feature_names'][:]
+    names: List[str] = []
+    for item in dataset:
+        if isinstance(item, bytes):
+            names.append(item.decode('utf-8'))
+        else:
+            names.append(str(item))
+    return names
+
+
+def load_significant_models(
+    significant_models_path: Union[str, Path],
+    fallback_report_path: Optional[Union[str, Path]] = None,
+) -> List[str]:
+    """Load the list of significantly deceptive models from disk."""
+
+    path = Path(significant_models_path)
+    if path.exists():
+        raw_text = path.read_text(encoding='utf-8').strip()
+        if raw_text:
+            data = json.loads(raw_text)
+            if isinstance(data, dict) and 'significant_models' in data:
+                models = data['significant_models']
+            else:
+                models = data
+            return [str(model) for model in models]
+
+    if fallback_report_path is not None:
+        fallback_path = Path(fallback_report_path)
+        if fallback_path.exists():
+            significant_models: List[str] = []
+            current_model: Optional[str] = None
+            is_significant = False
+            for line in fallback_path.read_text(encoding='utf-8').splitlines():
+                stripped = line.strip()
+                if stripped.startswith('Model: '):
+                    if current_model and is_significant:
+                        significant_models.append(current_model)
+                    current_model = stripped.split('Model:', 1)[1].strip()
+                    is_significant = False
+                elif 'Significant' in stripped:
+                    if 'YES' in stripped.upper():
+                        is_significant = True
+            if current_model and is_significant:
+                significant_models.append(current_model)
+            return significant_models
+
+    return []
 
 def model_save_dirs(model_dir):
     adapter_dir = model_dir / "adapter"
