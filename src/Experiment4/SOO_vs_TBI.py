@@ -139,16 +139,15 @@ def train_tbi(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
 
         for i, vignette in enumerate(batch):
             scenario = vignette["scenario"]
-            instruction = vignette["instruction_with_options"]
             response_a = vignette["response_a"]
             response_b = vignette["response_b"]
 
             for question in [vignette["question_1"], vignette["question_2"]]:
-                prompt = scenario + instruction
+                prompt_messages = utils.build_chat_messages(vignette)
 
                 model.eval()
                 with torch.no_grad():
-                    _, only_new = utils.generate_text(model, tokenizer, prompt)
+                    _, only_new = utils.generate_text(model, tokenizer, prompt_messages)
 
                 classification = utils.classify_response(only_new, response_a, response_b)
 
@@ -169,7 +168,7 @@ def train_tbi(vignettes, pretrained_adapter_dir, pretrained_tokenizer_dir):
                 )
 
                 model.train()
-                prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
+                prompt_t = utils.tokenize_input(prompt_messages, tokenizer).to(model.device)
                 logprob_sum = utils.compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
 
                 batch_rewards.append(reward)

@@ -55,6 +55,10 @@ def _process_model(
         current_index = start_index + index + 1
         _ensure_instruction_available(vignette)
         prompt = utils.build_prompt(vignette, instruction_key="instruction_deception_no_lying")
+        messages = utils.build_chat_messages(
+            vignette,
+            instruction_key="instruction_deception_no_lying",
+        )
 
         print("\n" + "=" * 80)
         print(f"Processing {current_index}/{len(vignettes)} (ID: {vignette['id']}):")
@@ -62,7 +66,7 @@ def _process_model(
         print(prompt.strip())
         print("-" * 80)
 
-        response_text = generator(prompt)
+        response_text = generator(messages)
         result = {
             "id": vignette["id"],
             "template_id": vignette.get("template_id"),
