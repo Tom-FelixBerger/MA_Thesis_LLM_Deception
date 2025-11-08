@@ -102,15 +102,25 @@ def main():
 
             for i, vignette in enumerate(batch):
                 scenario = vignette["scenario"]
-                instruction = vignette[f"instruction_{condition}"]
                 response_a = vignette["response_a"]
                 response_b = vignette["response_b"]
                 for question in [vignette["question_1"], vignette["question_2"]]:
-                    prompt = scenario + instruction
+                    prompt_text = utils.build_prompt(
+                        vignette,
+                        instruction_key=f"instruction_{condition}",
+                    )
+                    prompt_messages = utils.build_chat_messages(
+                        vignette,
+                        instruction_key=f"instruction_{condition}",
+                    )
 
                     model.eval()
                     with torch.no_grad():
-                        full_response, only_new = utils.generate_text(model, tokenizer, prompt)
+                        full_response, only_new = utils.generate_text(
+                            model,
+                            tokenizer,
+                            prompt_messages,
+                        )
 
                     classification = utils.classify_response(only_new, response_a, response_b) if condition == "with_options" else "no_classification"
 
@@ -132,13 +142,13 @@ def main():
                     if condition == "free_answer":
                         free_answers.append({
                             "vignette_id": vignette['id'],
-                            "prompt": prompt,
+                            "prompt": prompt_text,
                             "answer": only_new,
                             "reward": f"{reward:.4f}"
                         })
 
                     model.train()
-                    prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
+                    prompt_t = utils.tokenize_input(prompt_messages, tokenizer).to(model.device)
                     logprob_sum = utils.compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
 
                     batch_rewards.append(reward)

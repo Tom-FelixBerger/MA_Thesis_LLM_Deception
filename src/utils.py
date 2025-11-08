@@ -196,6 +196,23 @@ def build_prompt(
     return f"{scenario}{instruction}"
 
 
+def build_chat_messages(
+    vignette: dict,
+    instruction_key: str = "instruction_with_options",
+    scenario_key: str = "scenario",
+) -> List[Dict[str, str]]:
+    """Create chat-formatted messages for a vignette prompt."""
+
+    scenario = vignette.get(scenario_key, "").strip()
+    instruction = vignette.get(instruction_key, "").strip()
+
+    messages: List[Dict[str, str]] = []
+    if scenario:
+        messages.append({"role": "system", "content": scenario})
+    messages.append({"role": "user", "content": instruction})
+    return messages
+
+
 def build_vignette_prompt(vignette):
     return build_prompt(vignette)
 
@@ -209,7 +226,12 @@ def generate_classification_record(
     scenario_key: str = "scenario",
 ):
     prompt = build_prompt(vignette, instruction_key=instruction_key, scenario_key=scenario_key)
-    full_response, only_new = generate_text(model, tokenizer, prompt)
+    messages = build_chat_messages(
+        vignette,
+        instruction_key=instruction_key,
+        scenario_key=scenario_key,
+    )
+    full_response, only_new = generate_text(model, tokenizer, messages)
     classification = classify_response(only_new, vignette["response_a"], vignette["response_b"])
     return {
         "id": vignette["id"],
@@ -235,31 +257,65 @@ def filter_processed_vignettes(vignettes, output_filename):
     start_index = len(vignettes) - total_to_process
     return vignettes_to_process, total_to_process, start_index
 
-def tokenize_input(text, tokenizer):
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        truncation=True,
-        padding=True,
-        max_length=256
-    )
-    return inputs
+def tokenize_input(text_or_messages, tokenizer):
+    if isinstance(text_or_messages, str):
+        return tokenizer(
+            text_or_messages,
+            return_tensors="pt",
+            truncation=True,
+            padding=True,
+            max_length=256,
+        )
+
+    if isinstance(text_or_messages, Sequence):
+        sequence_items = list(text_or_messages)
+        if sequence_items and isinstance(sequence_items[0], dict) and "content" in sequence_items[0]:
+            if hasattr(tokenizer, "apply_chat_template"):
+                input_ids = tokenizer.apply_chat_template(
+                    sequence_items,
+                    add_generation_prompt=True,
+                    return_tensors="pt",
+                )
+                attention_mask = torch.ones_like(input_ids)
+                return BatchEncoding({
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                })
+            combined = "\n\n".join(item.get("content", "") for item in sequence_items)
+            return tokenizer(
+                combined,
+                return_tensors="pt",
+                truncation=True,
+                padding=True,
+                max_length=256,
+            )
+
+    raise TypeError("tokenize_input expects a string prompt or a sequence of chat messages")
 
 def generate_text(model, tokenizer, prompt):
-    inputs = tokenize_input(prompt, tokenizer).to(model.device)
+    inputs = tokenize_input(prompt, tokenizer)
+    if not isinstance(inputs, BatchEncoding):
+        inputs = BatchEncoding(inputs)
+    inputs = inputs.to(model.device)
+
+    generation_inputs = {key: value for key, value in inputs.items()}
 
     with torch.no_grad():
         outputs = model.generate(
-            **inputs,
+            **generation_inputs,
             max_new_tokens=32,
             temperature=0.7,
             top_p=0.9,
-            repetition_penalty=1,   # 1 is neutral, no penalty for repitition to let model repeat response options.
+            repetition_penalty=1,
             do_sample=True,
-            pad_token_id=tokenizer.eos_token_id
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
         )
+
+    input_ids = inputs["input_ids"]
+    generated_ids = outputs[0, input_ids.shape[-1]:]
+    only_new = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
     full_response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    only_new =  full_response[len(prompt):].lstrip()
     return full_response, only_new
 
 # Load vignettes
@@ -352,7 +408,7 @@ def build_text_generation_backend(
             bnb_4bit_use_double_quant=bool(config.get("bnb_4bit_use_double_quant", True)),
         )
 
-        def generator(prompt: str) -> str:
+        def generator(prompt) -> str:
             _, only_new = generate_text(model, tokenizer, prompt)
             return only_new
 

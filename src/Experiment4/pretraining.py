@@ -83,15 +83,21 @@ def main():
 
         for i, vignette in enumerate(batch):
             for condition in ["self", "other"]:
-                scenario = vignette[f"scenario_{condition}"]
-                instruction = vignette[f"instruction_{condition}"]
                 response_a = vignette["response_a"]
                 response_b = vignette["response_b"]
-                prompt = scenario + instruction
+                prompt_messages = utils.build_chat_messages(
+                    vignette,
+                    instruction_key=f"instruction_{condition}",
+                    scenario_key=f"scenario_{condition}",
+                )
 
                 model.eval()
                 with torch.no_grad():
-                    full_response, only_new = utils.generate_text(model, tokenizer, prompt)
+                    full_response, only_new = utils.generate_text(
+                        model,
+                        tokenizer,
+                        prompt_messages,
+                    )
 
                 classification = utils.classify_response(only_new, response_a, response_b)
 
@@ -107,7 +113,7 @@ def main():
                 )
 
                 model.train()
-                prompt_t = utils.tokenize_input(prompt, tokenizer).to(model.device)
+                prompt_t = utils.tokenize_input(prompt_messages, tokenizer).to(model.device)
                 logprob_sum = utils.compute_logprob_sequence(model, prompt_t, only_new, tokenizer)
 
                 batch_rewards.append(reward)
