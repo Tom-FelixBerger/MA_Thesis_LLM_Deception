@@ -59,7 +59,9 @@ def load_model_and_tokenizer(model_key):
         trust_remote_code=True,
         token=huggingface_auth_token,
     )
-    tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({"pad_token": "<pad>"})
+        model.resize_token_embeddings(len(tokenizer))
 
     return model, tokenizer
 
@@ -155,7 +157,7 @@ def tokenize_batch(prompts, tokenizer):
     encoded = tokenizer(
         text_batch,
         return_tensors="pt",
-        padding=True,
+        padding=True, # This is required for batching
         truncation=False,
     )
     return encoded
@@ -180,10 +182,12 @@ def batch_generate_text(model, tokenizer, prompts):
     input_len = encoded["input_ids"].shape[1]
     for i in range(len(prompts)):
         generated_ids = outputs[i, input_len:]
+
         only_new = tokenizer.decode(
             generated_ids,
             skip_special_tokens=True
         ).strip()
+
         full = tokenizer.decode(
             outputs[i],
             skip_special_tokens=False
