@@ -158,6 +158,11 @@ def tokenize_batch(prompts, tokenizer):
         padding=True, # This is required for batching
         truncation=False,
     )
+    attention_mask = (encoded != tokenizer.pad_token_id).long()
+    encoded = BatchEncoding({
+        "input_ids": encoded,
+        "attention_mask": attention_mask,
+    })
     return encoded
 
 def batch_generate_text(model, tokenizer, prompts):
