@@ -17,9 +17,9 @@ def main():
 
         for start in range(0, len(dec_inc_vignettes), BATCH_SIZE):
             batch = dec_inc_vignettes[start:start+BATCH_SIZE]
-            prompts = [v["prompt"] for v in batch]
+            message_batch = [v["messages"] for v in batch]
 
-            generated = utils.batch_generate_text(model, tokenizer, prompts)
+            generated = utils.batch_generate_text(model, tokenizer, message_batch)
 
             for vignette, (full, only_new) in zip(batch, generated):
                 classification = utils.classify_response(

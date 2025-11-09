@@ -14,15 +14,19 @@ PLOTS_DIR = PROJECT_ROOT / "plots"
 MODELS = {
     "mistral-7b-v03": {
         "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
+        "excluded": False,
     },
     "gemma-2-2b": {
         "model_id": "google/gemma-2-2b-it",
+        "excluded": True,
     },
     "gemma-2-9b": {
         "model_id": "google/gemma-2-9b-it",
+        "excluded": False,
     },
     "llama-3.1-8b": {
         "model_id": "meta-llama/Llama-3.1-8B-Instruct",
+        "excluded": True,
     },
 }
 
@@ -136,7 +140,9 @@ def generate_deception_incentive_vignettes(template_ids):
                 fill_comb=fill_comb,
             )
             vign = {
-                'prompt': scenario + instruction,
+                'messages': [
+                    {"role": "user", "content": scenario + instruction,},
+                ],
                 'response_a': response_a,
                 'response_b': response_b,
                 'template_id': t_id,
@@ -144,14 +150,37 @@ def generate_deception_incentive_vignettes(template_ids):
             vignettes.append(vign)
     return vignettes
 
+def generate_belief_inference_vignettes(template_ids):
+    vignettes = []
+    for t_id in template_ids:
+        templ = templates.TEMPLATES[t_id]
+        for fill_comb in generate_fill_combs(templ):
+            scenario, response_a, response_b, question, instruction = fill(
+                template=templ,
+                instruction=templates.INSTRUCTION_DECEPTION_INCENTIVE,
+                question=templ["question"],
+                fill_comb=fill_comb,
+            )
+            for target_c, quest_attr in [(False, 'attribute_a'), (True, 'attribute_b')]:
+                question = question.replace('{question_attribute}', fill_comb[quest_attr])
+                for target_p, response in [(quest_attr == 'attribute_a', response_a), (quest_attr == 'attribute_b', response_b)]:
+                    vign = {
+                        'messages': [
+                            {"role": "user", "content": scenario + instruction},
+                            {"role": "model", "content": response},
+                            {"role": "user", "content": question},
+                        ],
+                        'target_c': target_c,
+                        'target_p': target_p,
+                        'template_id': t_id,
+                    }
+                    vignettes.append(vign)
+    return vignettes
+
 ### Model Text Generation Utilities ###
-def tokenize_batch(prompts, tokenizer):
-    messages_batch = [
-        [{"role": "user", "content": p}]
-        for p in prompts
-    ]
+def tokenize_batch(message_batch, tokenizer):
     encoded = tokenizer.apply_chat_template(
-        messages_batch,
+        message_batch,
         tokenize=True,
         add_generation_prompt=True,
         return_tensors="pt",
@@ -165,8 +194,8 @@ def tokenize_batch(prompts, tokenizer):
     })
     return encoded
 
-def batch_generate_text(model, tokenizer, prompts):
-    encoded = tokenize_batch(prompts, tokenizer)
+def batch_generate_text(model, tokenizer, message_batch):
+    encoded = tokenize_batch(message_batch, tokenizer)
     encoded = {k: v.to(model.device) for k, v in encoded.items()}
 
     with torch.no_grad():
@@ -183,7 +212,7 @@ def batch_generate_text(model, tokenizer, prompts):
 
     results = []
     input_len = encoded["input_ids"].shape[1]
-    for i in range(len(prompts)):
+    for i in range(len(message_batch)):
         generated_ids = outputs[i, input_len:]
 
         only_new = tokenizer.decode(
