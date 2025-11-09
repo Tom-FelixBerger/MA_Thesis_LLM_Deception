@@ -154,6 +154,7 @@ def tokenize_batch(prompts, tokenizer):
         messages_batch,
         tokenize=True,
         add_generation_prompt=True,
+        return_tensors="pt",
         padding=True, # This is required for batching
         truncation=False,
     )
@@ -161,10 +162,7 @@ def tokenize_batch(prompts, tokenizer):
 
 def batch_generate_text(model, tokenizer, prompts):
     encoded = tokenize_batch(prompts, tokenizer)
-    if hasattr(encoded, "to"):
-        encoded = encoded.to(model.device)
-    else:
-        encoded = {k: v.to(model.device) for k, v in encoded.items()}
+    encoded = {k: v.to(model.device) for k, v in encoded.items()}
 
     with torch.no_grad():
         outputs = model.generate(
