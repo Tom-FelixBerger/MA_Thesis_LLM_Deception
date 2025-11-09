@@ -149,14 +149,10 @@ def tokenize_batch(prompts, tokenizer):
         [{"role": "user", "content": p}]
         for p in prompts
     ]
-    text_batch = tokenizer.apply_chat_template(
+    encoded = tokenizer.apply_chat_template(
         messages_batch,
-        tokenize=False,
+        tokenize=True,
         add_generation_prompt=True,
-    )
-    encoded = tokenizer(
-        text_batch,
-        return_tensors="pt",
         padding=True, # This is required for batching
         truncation=False,
     )
