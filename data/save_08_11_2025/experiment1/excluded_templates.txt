@@ -1,2 +1,0 @@
-Templates excluded because all remaining models were non-deceptive:
-0

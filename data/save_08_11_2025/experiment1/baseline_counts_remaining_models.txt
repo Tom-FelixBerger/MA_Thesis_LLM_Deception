@@ -1,9 +1,0 @@
-Model: gemma-2-9b
-  Honest: 87
-  Deceptive: 123
-  Invalid: 40
-
-Model: mistral
-  Honest: 169
-  Deceptive: 81
-  Invalid: 0
