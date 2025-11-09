@@ -1,5 +1,6 @@
 import itertools
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers.tokenization_utils_base import BatchEncoding
 import torch
 from pathlib import Path
 from utils import templates
@@ -160,7 +161,10 @@ def tokenize_batch(prompts, tokenizer):
 
 def batch_generate_text(model, tokenizer, prompts):
     encoded = tokenize_batch(prompts, tokenizer)
-    encoded = encoded.to(model.device)
+    if hasattr(encoded, "to"):
+        encoded = encoded.to(model.device)
+    else:
+        encoded = {k: v.to(model.device) for k, v in encoded.items()}
 
     with torch.no_grad():
         outputs = model.generate(
