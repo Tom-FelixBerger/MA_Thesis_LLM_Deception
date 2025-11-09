@@ -49,7 +49,6 @@ def _parse_torch_dtype(value: Optional[Union[str, torch.dtype]]) -> Optional[tor
         return mapping[normalized]
     raise TypeError(f"Unsupported torch dtype value: {value}")
 
-
 MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
     "mistral": {
         "type": "huggingface",
@@ -60,26 +59,6 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
         "required_credentials": ["HUGGINGFACE_TOKEN"],
         "system_message": True,
     },
-    # "gemma-3-4b": {
-    #     "type": "huggingface",
-    #     "model_id": "google/gemma-3-4b-it",
-    #     "quantized": True,
-    #     "device_map": "cuda",
-    #     "attn_implementation": "eager",
-    #     "torch_dtype": "bfloat16",
-    #     "bnb_4bit_compute_dtype": "bfloat16",
-    #     "required_credentials": ["HUGGINGFACE_TOKEN"],
-    # },
-    # "gemma-3-12b": {
-    #     "type": "huggingface",
-    #     "model_id": "google/gemma-3-12b-it",
-    #     "quantized": True,
-    #     "device_map": "cuda",
-    #     "attn_implementation": "eager",
-    #     "torch_dtype": "bfloat16",
-    #     "bnb_4bit_compute_dtype": "bfloat16",
-    #     "required_credentials": ["HUGGINGFACE_TOKEN"],
-    # },
     "gemma-2-2b": {
         "type": "huggingface",
         "model_id": "google/gemma-2-2b-it",
@@ -114,7 +93,6 @@ MODEL_CONFIGS: Dict[str, Dict[str, object]] = {
         "system_message": True,
     },
 }
-
 
 def load_model(
     model_name: str,
@@ -168,7 +146,6 @@ def load_model(
             **common_kwargs,
         )
     return model
-
 
 def load_tokenizer(path: Optional[str] = None, token: Optional[str] = None):
     print("Loading tokenizer ...")
@@ -420,9 +397,6 @@ def load_model_for_key(model_key: str, credentials: Dict[str, str]):
 def load_tokenizer_for_key(model_key: str, credentials: Dict[str, str]):
     ensure_required_credentials(model_key, credentials)
     config = get_model_config(model_key)
-    if config["type"] != "huggingface":
-        raise NotImplementedError(f"Unsupported model type: {config['type']}")
-
     token = credentials.get("HUGGINGFACE_TOKEN")
     model_id = str(config["model_id"])
     return load_tokenizer(path=model_id, token=token)
