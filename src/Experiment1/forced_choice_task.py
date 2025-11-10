@@ -9,14 +9,15 @@ def main():
     len_vigns = len(dec_inc_vignettes)
     
     for m, model_key in enumerate(utils.MODELS):
-        
+        to_process = dec_inc_vignettes.copy()
         results_buffer = []
         output_path = utils.DATA_DIR / "Experiment1" / f"{model_key}_forced_choice_responses.jsonl"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if os.path.exists(output_path):
             with open(output_path, 'r', encoding='utf-8') as f:
-                dec_inc_vignettes = dec_inc_vignettes[len(f):]
-            if len(dec_inc_vignettes) == 0:
+                num_lines = sum(1 for _ in f)
+                to_process = to_process[num_lines:]
+            if len(to_process) == 0:
                 print(f"All vignettes already processed for model {model_key}. Skipping.")
                 continue
         else:
@@ -25,8 +26,8 @@ def main():
         model, tokenizer = utils.load_model_and_tokenizer(model_key)
 
 
-        for start in range(0, len(dec_inc_vignettes), BATCH_SIZE):
-            batch = dec_inc_vignettes[start:start+BATCH_SIZE]
+        for start in range(0, len(to_process), BATCH_SIZE):
+            batch = to_process[start:start+BATCH_SIZE]
             message_batch = [v["messages"] for v in batch]
 
             generated = utils.batch_generate_text(model, tokenizer, message_batch)
@@ -49,7 +50,7 @@ def main():
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
             results_buffer = []
 
-            print(f"Processed {min(start+BATCH_SIZE, len(dec_inc_vignettes))} / {len(dec_inc_vignettes)} vignettes for model {m+1} of {len(utils.MODELS)} ({model_key}).")
+            print(f"Processed {min(start+BATCH_SIZE, len(to_process))} / {len(to_process)} remaining vignettes for model {m+1} of {len(utils.MODELS)} ({model_key}).")
 
 if __name__ == "__main__":
     main()
