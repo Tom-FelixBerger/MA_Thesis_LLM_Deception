@@ -4,7 +4,9 @@ from utils import utils
 
 
 def main():
-    vignettes = load_vignettes()
+    vignettes = utils.generate_belief_inference_vignettes(template_ids=[6,7,8,9,10,11,12,13])
+
+    ##### CONTINUE HERE: Set up activation extraction #####
 
     for m, model_key in enumerate(utils.MODELS):
         if utils.MODELS[model_key]["excluded"]:
