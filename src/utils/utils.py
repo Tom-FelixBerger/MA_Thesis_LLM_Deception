@@ -4,6 +4,8 @@ from transformers.tokenization_utils_base import BatchEncoding
 import torch
 from pathlib import Path
 from utils import templates
+import numpy as np
+import torch
 
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent.parent
@@ -14,7 +16,10 @@ PLOTS_DIR = PROJECT_ROOT / "plots"
 MODELS = {
     "mistral-7b-v03": {
         "model_id": "mistralai/Mistral-7B-Instruct-v0.3",
-        "excluded": False,
+        "excluded": True,
+        "num_layers": 32,
+        "num_heads": 32,
+        "head_dim": 128,
     },
     "gemma-2-2b": {
         "model_id": "google/gemma-2-2b-it",
@@ -23,12 +28,26 @@ MODELS = {
     "gemma-2-9b": {
         "model_id": "google/gemma-2-9b-it",
         "excluded": False,
+        "num_layers": 42,
+        "num_heads": 16,
+        "head_dim": 256,
     },
     "llama-3.1-8b": {
         "model_id": "meta-llama/Llama-3.1-8B-Instruct",
-        "excluded": True,
+        "excluded": False,
+        "num_layers": 32,
+        "num_heads": 32,
+        "head_dim": 128,
     },
 }
+
+def get_model_dims(model_key):
+    num_layers = MODELS[model_key]["num_layers"]
+    num_heads = MODELS[model_key]["num_heads"]
+    head_dim = MODELS[model_key]["head_dim"]
+    return num_layers, num_heads, head_dim
+
+
 
 def load_huggingface_auth_token():
     token_file = PROJECT_ROOT / "credentials.txt"
@@ -162,13 +181,13 @@ def generate_belief_inference_vignettes(template_ids):
                 fill_comb=fill_comb,
             )
             for target_c, quest_attr in [(False, 'attribute_a'), (True, 'attribute_b')]:
-                question = question.replace('{question_attribute}', fill_comb[quest_attr])
+                repl_quest = question.replace('{question_attribute}', fill_comb[quest_attr])
                 for target_p, response in [(quest_attr == 'attribute_a', response_a), (quest_attr == 'attribute_b', response_b)]:
                     vign = {
                         'messages': [
                             {"role": "user", "content": scenario + instruction},
-                            {"role": "model", "content": response},
-                            {"role": "user", "content": question},
+                            {"role": "assistant", "content": response},
+                            {"role": "user", "content": repl_quest},
                         ],
                         'target_c': target_c,
                         'target_p': target_p,
@@ -229,21 +248,68 @@ def batch_generate_text(model, tokenizer, message_batch):
     return results
 
 def classify_response(response, response_a, response_b):
-    # Clean
     target_dec = clean_text(response_a)
     target_hon = clean_text(response_b)
     response_clean = clean_text(response)
-    
-    # Classify
+
     if target_dec == response_clean:
         return 'deceptive'
     elif target_hon == response_clean:
         return 'honest'
     else:
         return 'invalid'
-    
-# Clean the responses(remove everything but alphanumeric and spaces)
+
 def clean_text(text):
     text = text.replace("&#39;", "'")
     text = text.replace("&quot;", '"')
     return ' '.join(c for c in text if c.isalnum() or c.isspace()).lower().strip()
+
+
+### Activation Extraction Utilities ###
+def extract_batch_attention_outputs(message_batch, model, tokenizer, model_key):
+    num_layers, num_heads, head_dim = get_model_dims(model_key)
+
+    encoded = tokenize_batch(message_batch, tokenizer)
+    encoded = {k: v.to(model.device) for k, v in encoded.items()}
+    input_ids = encoded["input_ids"]
+    attention_mask = encoded["attention_mask"]
+    batch_size = input_ids.shape[0]
+
+    layers = model.model.layers
+
+    # collected[l] = (B, H, D)
+    collected = [None] * num_layers
+
+    def extract_from_tensor(tensor, layer_idx):
+        B, S, H = tensor.shape
+        reshaped = tensor.view(B, S, num_heads, head_dim)
+
+        # pick last non-pad token
+        final_idx = attention_mask.sum(dim=1) - 1
+        out = np.stack([
+            reshaped[b, final_idx[b]].detach().cpu().float().numpy()
+            for b in range(B)
+        ])
+        collected[layer_idx] = out  # (B, H, D)
+
+    def make_hook(layer_idx):
+        def hook(mod, inputs, outputs):
+            extract_from_tensor(inputs[0], layer_idx)
+        return hook
+
+    hooks = []
+    for i in range(num_layers):
+        attn = layers[i].self_attn
+        module = attn.o_proj
+        hooks.append(module.register_forward_hook(make_hook(i)))
+
+    with torch.no_grad():
+        _ = model(**encoded)
+
+    for h in hooks:
+        h.remove()
+
+    # Stack into (B, L, H, D)
+    attention_tensor = np.stack(collected, axis=1)
+
+    return attention_tensor

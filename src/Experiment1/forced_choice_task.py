@@ -6,7 +6,6 @@ BATCH_SIZE = 10
 
 def main():
     dec_inc_vignettes = utils.generate_deception_incentive_vignettes(template_ids=range(30))
-    len_vigns = len(dec_inc_vignettes)
     
     for m, model_key in enumerate(utils.MODELS):
         to_process = dec_inc_vignettes.copy()
@@ -26,8 +25,8 @@ def main():
         model, tokenizer = utils.load_model_and_tokenizer(model_key)
 
 
-        for start in range(0, len(to_process), BATCH_SIZE):
-            batch = to_process[start:start+BATCH_SIZE]
+        for idx in range(0, len(to_process), BATCH_SIZE):
+            batch = to_process[idx:idx+BATCH_SIZE]
             message_batch = [v["messages"] for v in batch]
 
             generated = utils.batch_generate_text(model, tokenizer, message_batch)
@@ -50,7 +49,7 @@ def main():
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
             results_buffer = []
 
-            print(f"Processed {min(start+BATCH_SIZE, len(to_process))} / {len(to_process)} remaining vignettes for model {m+1} of {len(utils.MODELS)} ({model_key}).")
+            print(f"Processed {min(idx+BATCH_SIZE, len(to_process))} / {len(to_process)} remaining vignettes for model {m+1} of {len(utils.MODELS)} ({model_key}).")
 
 if __name__ == "__main__":
     main()
