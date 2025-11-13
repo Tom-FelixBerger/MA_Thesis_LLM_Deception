@@ -103,10 +103,11 @@ def fix_capitalization(text):
         fixed_sentences.append(s)
     return "\n".join(fixed_sentences)
 
-def fill(template, instruction, question, fill_comb):
+def fill(template, instruction, fill_comb):
     scenario = template['scenario']
     response_a = template['response_a']
     response_b = template['response_b']
+    question = template['question']
     for k, v in fill_comb.items():
         scenario = fix_capitalization(scenario.replace(f'{{{k}}}', v))
         response_a = fix_capitalization(response_a.replace(f'{{{k}}}', v))
@@ -147,15 +148,14 @@ def generate_fill_combs(template):
         fill_combs.append(fill_comb)
     return fill_combs
 
-def generate_deception_incentive_vignettes(template_ids):
+def generate_deception_incentive_vignettes(template_ids, return_question):
     vignettes = []
     for t_id in template_ids:
         templ = templates.TEMPLATES[t_id]
         for fill_comb in generate_fill_combs(templ):
-            scenario, response_a, response_b, _, instruction = fill(
+            scenario, response_a, response_b, question, instruction = fill(
                 template=templ,
                 instruction=templates.INSTRUCTION_DECEPTION_INCENTIVE,
-                question=None,
                 fill_comb=fill_comb,
             )
             vign = {
@@ -166,6 +166,9 @@ def generate_deception_incentive_vignettes(template_ids):
                 'response_b': response_b,
                 'template_id': t_id,
             }
+            if return_question:
+                vign['question'] = question
+                vign['attributes'] = templ['attributes']
             vignettes.append(vign)
     return vignettes
 
@@ -177,7 +180,6 @@ def generate_belief_inference_vignettes(template_ids):
             scenario, response_a, response_b, question, instruction = fill(
                 template=templ,
                 instruction=templates.INSTRUCTION_DECEPTION_INCENTIVE,
-                question=templ["question"],
                 fill_comb=fill_comb,
             )
             for target_c, quest_attr in [(False, 'attribute_a'), (True, 'attribute_b')]:
@@ -266,7 +268,8 @@ def clean_text(text):
 
 
 ### Activation Extraction Utilities ###
-def extract_batch_attention_outputs(message_batch, model, tokenizer, model_key):
+
+def extract_batch_attention_outputs_pre_projection(message_batch, model, tokenizer, model_key):
     num_layers, num_heads, head_dim = get_model_dims(model_key)
 
     encoded = tokenize_batch(message_batch, tokenizer)

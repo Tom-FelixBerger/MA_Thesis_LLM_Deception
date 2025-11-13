@@ -1,6 +1,7 @@
 import h5py
 import numpy as np
 import itertools
+import torch
 from utils import utils, templates
 
 BATCH_SIZE = 10
@@ -87,7 +88,7 @@ def main():
             message_batch = [v["messages"] for v in batch]
 
             # (B, L, H, D)
-            attention_tensor = utils.extract_batch_attention_outputs(
+            attention_tensor = utils.extract_batch_attention_outputs_pre_projection(
                 message_batch, model, tokenizer, model_key
             )
 
