@@ -31,13 +31,15 @@ MODELS = {
         "num_layers": 42,
         "num_heads": 16,
         "head_dim": 256,
+        "start_layer": 21
     },
     "llama-3.1-8b": {
         "model_id": "meta-llama/Llama-3.1-8B-Instruct",
-        "excluded": False,
+        "excluded": True,
         "num_layers": 32,
         "num_heads": 32,
         "head_dim": 128,
+        "start_layer": 16
     },
 }
 
