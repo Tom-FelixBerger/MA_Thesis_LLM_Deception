@@ -409,8 +409,11 @@ def extract_batch_attention_outputs_pre_projection(message_batch, model, tokeniz
     attention_mask = encoded["attention_mask"]
     batch_size = input_ids.shape[0]
 
-    layers = model.model.layers
-
+    try:
+        layers = model.model.layers
+    except:
+        layers = model.model.model.layers # for peft wrapped model during finetuning
+         
     # collected[l] = (B, H, D)
     collected = [None] * num_layers
 
