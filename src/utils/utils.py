@@ -1,11 +1,14 @@
 import itertools
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from transformers.tokenization_utils_base import BatchEncoding
-import torch
 from pathlib import Path
-from utils import templates
+
 import numpy as np
 import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers.tokenization_utils_base import BatchEncoding
+
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+
+from utils import templates
 
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent.parent
@@ -90,6 +93,74 @@ def load_model_and_tokenizer(model_key):
         model.resize_token_embeddings(len(tokenizer))
 
     return model, tokenizer
+
+
+def freeze_model_parameters(model):
+    for param in model.parameters():
+        param.requires_grad = False
+
+
+def second_half_lora_targets(model_key):
+    total_layers = MODELS[model_key]["num_layers"]
+    start = total_layers // 2
+    targets = []
+    for layer_idx in range(start, total_layers):
+        for proj_name in ["q_proj", "v_proj"]:
+            targets.append(f"model.layers.{layer_idx}.self_attn.{proj_name}")
+    return targets
+
+
+def prepare_tbi_lora_model(model_key, adapter_dir, tokenizer_dir):
+    model, tokenizer = load_model_and_tokenizer(model_key)
+    if tokenizer_dir.exists() and any(tokenizer_dir.iterdir()):
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, trust_remote_code=True)
+    model.config.use_cache = False
+    model = prepare_model_for_kbit_training(model)
+    model.gradient_checkpointing_enable()
+    freeze_model_parameters(model)
+
+    if adapter_dir.exists() and any(adapter_dir.iterdir()):
+        model = PeftModel.from_pretrained(model, adapter_dir)
+        model.train()
+        return model, tokenizer
+
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=second_half_lora_targets(model_key),
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+
+    model = get_peft_model(model, lora_config)
+    model.train()
+    return model, tokenizer
+
+
+def tbi_checkpoint_paths(base_dir):
+    adapter_dir = base_dir / "adapter"
+    tokenizer_dir = base_dir / "tokenizer"
+    checkpoint_path = base_dir / "optimizer.pt"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+    return adapter_dir, tokenizer_dir, checkpoint_path
+
+
+def save_tbi_state(model, tokenizer, optimizer, adapter_dir, tokenizer_dir, checkpoint_path, update_idx):
+    model.save_pretrained(adapter_dir)
+    tokenizer.save_pretrained(tokenizer_dir)
+    state = dict(optim_state=optimizer.state_dict(), update_idx=update_idx)
+    torch.save(state, checkpoint_path)
+
+
+def load_tbi_optimizer_state(optimizer, checkpoint_path):
+    if not checkpoint_path.exists():
+        return 0
+    state = torch.load(checkpoint_path, map_location="cpu")
+    optimizer.load_state_dict(state["optim_state"])
+    return state.get("update_idx", 0) + 1
 
 ### Vignette Generation Utilities ###
 def fix_capitalization(text):
@@ -251,6 +322,64 @@ def batch_generate_text(model, tokenizer, message_batch):
 
     return results
 
+
+def chat_prompt_tensors(messages, tokenizer, device):
+    input_ids = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+        padding=False,
+        truncation=False,
+    )
+    attention_mask = torch.ones_like(input_ids)
+    input_ids = input_ids.to(device)
+    attention_mask = attention_mask.to(device)
+    return input_ids, attention_mask
+
+
+def generate_chat_completion(model, tokenizer, messages, max_new_tokens, temperature, top_p):
+    input_ids, attention_mask = chat_prompt_tensors(messages, tokenizer, model.device)
+    outputs = model.generate(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        do_sample=True,
+        pad_token_id=tokenizer.eos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        return_dict_in_generate=True,
+        output_scores=False,
+    )
+    sequences = outputs.sequences
+    generated = sequences[:, input_ids.shape[1]:]
+    text = tokenizer.decode(generated[0], skip_special_tokens=True).strip()
+    return dict(
+        text=text,
+        generated_ids=generated,
+        prompt_ids=input_ids,
+        prompt_mask=attention_mask,
+    )
+
+
+def compute_logprob_from_generated(model, prompt_ids, prompt_mask, generated_ids):
+    if generated_ids.numel() == 0:
+        return torch.tensor(0.0, device=model.device)
+    gen_mask = torch.ones_like(generated_ids)
+    full_ids = torch.cat([prompt_ids, generated_ids], dim=1)
+    full_mask = torch.cat([prompt_mask, gen_mask], dim=1)
+    outputs = model(full_ids, attention_mask=full_mask)
+    logits = outputs.logits[:, :-1]
+    targets = full_ids[:, 1:]
+    prompt_len = prompt_ids.shape[1]
+    start = prompt_len - 1
+    relevant_logits = logits[:, start:]
+    relevant_targets = targets[:, start:]
+    log_probs = torch.log_softmax(relevant_logits, dim=-1)
+    gathered = log_probs.gather(2, relevant_targets.unsqueeze(-1)).squeeze(-1)
+    return gathered.sum()
+
 def classify_response(response, response_a, response_b):
     target_dec = clean_text(response_a)
     target_hon = clean_text(response_b)
@@ -318,3 +447,8 @@ def extract_batch_attention_outputs_pre_projection(message_batch, model, tokeniz
     attention_tensor = np.stack(collected, axis=1)
 
     return attention_tensor
+
+
+def extract_single_attention_outputs(messages, model, tokenizer, model_key):
+    tensor = extract_batch_attention_outputs_pre_projection([messages], model, tokenizer, model_key)
+    return tensor[0]
