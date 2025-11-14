@@ -35,7 +35,7 @@ MODELS = {
     },
     "llama-3.1-8b": {
         "model_id": "meta-llama/Llama-3.1-8B-Instruct",
-        "excluded": True,
+        "excluded": False,
         "num_layers": 32,
         "num_heads": 32,
         "head_dim": 128,
