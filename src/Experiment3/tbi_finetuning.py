@@ -15,7 +15,7 @@ LEARNING_RATE = 1e-4
 TEMPERATURE = 0.7
 TOP_P = 0.9
 SEED = 42
-MODEL_SAVE_DIR = utils.PROJECT_ROOT / "model_saves"
+MODEL_SAVE_DIR = utils.DATA_DIR / "Experiment3" / "model_saves"
 
 
 def set_seed(seed):
@@ -47,21 +47,27 @@ def probe_probability(attention_tensor, probe):
     return float(probs)
 
 
-def compute_reward(attention_tensor, probe_c, probe_p):
-    prob_c = probe_probability(attention_tensor, probe_c)
-    prob_p = probe_probability(attention_tensor, probe_p)
-    p_disagree = prob_p * (1.0 - prob_c) + (1.0 - prob_p) * prob_c
-    reward = 1.0 - 2.0 * p_disagree
+def compute_reward(attention_tensors, probe_c, probe_p):
+    prob_c_0 = probe_probability(attention_tensors[0], probe_c)
+    prob_p_0 = probe_probability(attention_tensors[0], probe_p)
+    prob_c_1 = probe_probability(attention_tensors[1], probe_c)
+    prob_p_1 = probe_probability(attention_tensors[1], probe_p)
+    p_disagree_0 = prob_p_0 * (1.0 - prob_c_0) + (1.0 - prob_p_0) * prob_c_0
+    p_disagree_1 = prob_p_1 * (1.0 - prob_c_1) + (1.0 - prob_p_1) * prob_c_1
+    reward = 1.0 - p_disagree_0 - p_disagree_1
     return float(reward)
 
 
 def build_belief_messages(vignette, response_text):
-    question = vignette["question"].replace("{question_attribute}", vignette["attributes"][1])
+    question_0 = vignette["question"].replace("{question_attribute}", vignette["attributes"][0])
+    question_1 = vignette["question"].replace("{question_attribute}", vignette["attributes"][1])
     return [
-        dict(role="user", content=vignette["messages"][0]["content"]),
-        dict(role="assistant", content=response_text),
-        dict(role="user", content=question),
-    ]
+        [
+            dict(role="user", content=vignette["messages"][0]["content"]),
+            dict(role="assistant", content=response_text),
+            dict(role="user", content=question),
+        ] for question in [question_0, question_1]]
+
 
 
 def run_tbi_finetuning(model_key, vignettes):
@@ -108,14 +114,14 @@ def run_tbi_finetuning(model_key, vignettes):
             if classification == "invalid" or len(generated_text) == 0:
                 reward = 0.0
             else:
-                belief_messages = build_belief_messages(item, generated_text)
-                attention_tensor = utils.extract_single_attention_outputs(
+                belief_messages_list = build_belief_messages(item, generated_text)
+                attention_tensors = [utils.extract_single_attention_outputs(
                     belief_messages,
                     model,
                     tokenizer,
                     model_key,
-                )
-                reward = compute_reward(attention_tensor, probe_c, probe_p)
+                ) for belief_messages in belief_messages_list]
+                reward = compute_reward(attention_tensors, probe_c, probe_p)
 
             model.train()
             logprob = utils.compute_logprob_from_generated(
