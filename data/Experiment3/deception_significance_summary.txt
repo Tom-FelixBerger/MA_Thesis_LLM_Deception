@@ -1,0 +1,25 @@
+Experiment 3 – Significance Results
+
+Model: gemma-2-9b TBI finetuned
+  Baseline deceptive proportion: 0.6133
+  Finetuned deceptive proportion: 0.0300
+  p-value: 4.949e-106
+  Significant at α=0.01: YES
+
+Model: llama-3.1-8b TBI finetuned
+  Baseline deceptive proportion: 0.5210
+  Finetuned deceptive proportion: 0.4934
+  p-value: 0.221
+  Significant at α=0.01: NO
+
+Model: gemma-2-9b free finetuned
+  Baseline deceptive proportion: 0.6133
+  Finetuned deceptive proportion: 0.6233
+  p-value: 0.6595
+  Significant at α=0.01: NO
+
+Model: llama-3.1-8b free finetuned
+  Baseline deceptive proportion: 0.5210
+  Finetuned deceptive proportion: 0.6960
+  p-value: 1
+  Significant at α=0.01: NO

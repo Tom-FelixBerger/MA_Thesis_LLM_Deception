@@ -1,0 +1,30 @@
+[
+  {
+    "finetuned_deceptive_proportion": 0.03,
+    "baseline_deceptive_proportion": 0.6133333333333333,
+    "p_value": 4.948517015973058e-106,
+    "significant": true,
+    "model": "gemma-2-9b TBI finetuned"
+  },
+  {
+    "finetuned_deceptive_proportion": 0.49344978165938863,
+    "baseline_deceptive_proportion": 0.5210084033613446,
+    "p_value": 0.22096534507240304,
+    "significant": false,
+    "model": "llama-3.1-8b TBI finetuned"
+  },
+  {
+    "finetuned_deceptive_proportion": 0.6233333333333333,
+    "baseline_deceptive_proportion": 0.6133333333333333,
+    "p_value": 0.6595110891016951,
+    "significant": false,
+    "model": "gemma-2-9b free finetuned"
+  },
+  {
+    "finetuned_deceptive_proportion": 0.696,
+    "baseline_deceptive_proportion": 0.5210084033613446,
+    "p_value": 0.9999999936731571,
+    "significant": false,
+    "model": "llama-3.1-8b free finetuned"
+  }
+]
